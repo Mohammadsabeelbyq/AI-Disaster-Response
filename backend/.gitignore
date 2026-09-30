@@ -1,0 +1,11 @@
+# The backend virtual environment was created in this directory.
+/Include/
+/Lib/
+/Scripts/
+/venv/
+/pyvenv.cfg
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/

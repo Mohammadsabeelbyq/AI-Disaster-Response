@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Report an Incident</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --text:#1c1f24; --muted:#5b6470; --line:#d5d9e0;
+          --accent:#c0392b; --ok:#1e7e34; --err:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --card:#1e2127; --text:#eceff3; --muted:#9aa4b2; --line:#343a44;
+            --accent:#e5574a; --ok:#5fd07a; --err:#ff8a80; } }
+  body { margin:0; font:16px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--text); }
+  main { max-width:640px; margin:0 auto; padding:24px 16px 48px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:20px; margin-bottom:20px; }
+  h1 { font-size:1.4rem; margin:0 0 16px; } h2 { font-size:1.1rem; margin:0 0 12px; }
+  label { display:block; font-weight:600; margin:12px 0 4px; }
+  .hint { font-weight:400; color:var(--muted); font-size:.85rem; }
+  input, select, textarea { width:100%; box-sizing:border-box; padding:8px 10px; font:inherit;
+    color:var(--text); background:var(--bg); border:1px solid var(--line); border-radius:6px; }
+  textarea { min-height:110px; resize:vertical; }
+  .row { display:flex; gap:12px; } .row > div { flex:1; }
+  button { margin-top:16px; padding:10px 18px; font:inherit; font-weight:600; color:#fff;
+    background:var(--accent); border:0; border-radius:6px; cursor:pointer; }
+  button:disabled { opacity:.6; cursor:wait; }
+  .msg { margin-top:14px; padding:10px 12px; border-radius:6px; border:1px solid; display:none; }
+  .msg.ok { display:block; color:var(--ok); border-color:var(--ok); }
+  .msg.err { display:block; color:var(--err); border-color:var(--err); }
+  .msg ul { margin:6px 0 0 18px; padding:0; }
+  table { width:100%; border-collapse:collapse; margin-top:10px; font-size:.9rem; }
+  th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
+  .acc { color:var(--ok); font-weight:600; } .rej { color:var(--err); font-weight:600; }
+</style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <h1>Report an incident</h1>
+    <form id="reportForm" novalidate>
+      <label for="disaster_type">Incident type *</label>
+      <select id="disaster_type" name="disaster_type" required>
+        <option value="">Select a type…</option>
+        <option>FLOOD</option><option>FIRE</option><option>EARTHQUAKE</option>
+        <option>LANDSLIDE</option><option>CYCLONE</option><option>ROAD_ACCIDENT</option>
+        <option>BUILDING_COLLAPSE</option><option>MEDICAL_EMERGENCY</option><option>OTHER</option>
+      </select>
+
+      <label for="description">Description *</label>
+      <textarea id="description" name="description" maxlength="5000" required
+        placeholder="What is happening? Who is affected?"></textarea>
+
+      <div class="row">
+        <div><label for="latitude">Latitude *</label>
+          <input id="latitude" name="latitude" type="number" step="any" min="-90" max="90" placeholder="10.027" required></div>
+        <div><label for="longitude">Longitude *</label>
+          <input id="longitude" name="longitude" type="number" step="any" min="-180" max="180" placeholder="76.308" required></div>
+      </div>
+
+      <label for="location_name">Location name <span class="hint">(optional)</span></label>
+      <input id="location_name" name="location_name" maxlength="255" placeholder="e.g. Edappally">
+
+      <label for="image">Photo <span class="hint">(optional · JPEG, PNG or WebP · max 5 MB)</span></label>
+      <input id="image" name="image" type="file" accept="image/jpeg,image/png,image/webp">
+
+      <button type="submit" id="submitBtn">Submit report</button>
+      <div id="formMsg" class="msg" role="status"></div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Bulk import <span class="hint">(JSON or CSV)</span></h2>
+    <p class="hint">Columns / fields: disaster_type, description, latitude, longitude, location_name (optional).</p>
+    <input id="importFile" type="file" accept=".json,.csv,application/json,text/csv">
+    <button type="button" id="importBtn">Import file</button>
+    <div id="importMsg" class="msg" role="status"></div>
+    <div id="importTable"></div>
+  </div>
+</main>
+
+<script>
+  const MAX_IMAGE = 5 * 1024 * 1024;
+  const TYPES = ["image/jpeg", "image/png", "image/webp"];
+  const $ = id => document.getElementById(id);
+
+  function show(el, kind, title, items) {
+    el.className = "msg " + kind;
+    el.innerHTML = "";
+    const strong = document.createElement("strong"); strong.textContent = title; el.appendChild(strong);
+    if (items && items.length) {
+      const ul = document.createElement("ul");
+      items.forEach(t => { const li = document.createElement("li"); li.textContent = t; ul.appendChild(li); });
+      el.appendChild(ul);
+    }
+  }
+
+  function validateForm(f) {
+    const errs = [];
+    if (!f.disaster_type.value) errs.push("Incident type is required.");
+    if (!f.description.value.trim()) errs.push("Description is required.");
+    const lat = parseFloat(f.latitude.value), lon = parseFloat(f.longitude.value);
+    if (isNaN(lat) || lat < -90 || lat > 90) errs.push("Latitude must be a number between -90 and 90.");
+    if (isNaN(lon) || lon < -180 || lon > 180) errs.push("Longitude must be a number between -180 and 180.");
+    const file = f.image.files[0];
+    if (file && !TYPES.includes(file.type)) errs.push("Photo must be a JPEG, PNG or WebP image.");
+    if (file && file.size > MAX_IMAGE) errs.push("Photo must be 5 MB or smaller.");
+    return errs;
+  }
+
+  $("reportForm").addEventListener("submit", async e => {
+    e.preventDefault();
+    const f = e.target, msg = $("formMsg");
+    const errs = validateForm(f);
+    if (errs.length) return show(msg, "err", "Please fix the following:", errs);
+    const body = new FormData(f);
+    if (!f.image.files[0]) body.delete("image");   // no file chosen => text-only report
+    $("submitBtn").disabled = true;
+    try {
+      const res = await fetch("/reports", { method: "POST", body });
+      const data = await res.json();
+      if (res.ok) {
+        show(msg, "ok", "Report submitted. Reference ID: " + data.id +
+          (data.image ? " (photo attached)" : ""));
+        f.reset();
+      } else {
+        show(msg, "err", data.message || "Submission failed.", data.errors);
+      }
+    } catch (_) {
+      show(msg, "err", "Could not reach the server. Please try again.");
+    } finally { $("submitBtn").disabled = false; }
+  });
+
+  $("importBtn").addEventListener("click", async () => {
+    const file = $("importFile").files[0], msg = $("importMsg"), table = $("importTable");
+    table.innerHTML = "";
+    if (!file) return show(msg, "err", "Choose a .json or .csv file first.");
+    const name = file.name.toLowerCase();
+    const kind = name.endsWith(".json") ? "json" : name.endsWith(".csv") ? "csv" : null;
+    if (!kind) return show(msg, "err", "Only .json and .csv files are supported.");
+    $("importBtn").disabled = true;
+    try {
+      const res = await fetch("/reports/import/" + kind, { method: "POST",
+        headers: { "Content-Type": kind === "json" ? "application/json" : "text/csv" },
+        body: await file.text() });
+      const data = await res.json();
+      if (!res.ok) return show(msg, "err", data.message || "Import failed.", data.errors);
+      show(msg, data.rejected ? "err" : "ok",
+        `${data.total} records: ${data.accepted} accepted, ${data.rejected} rejected.`);
+      const t = document.createElement("table");
+      t.innerHTML = "<tr><th>#</th><th>Result</th><th>Details</th></tr>";
+      data.results.forEach(r => {
+        const tr = t.insertRow();
+        tr.insertCell().textContent = r.record;
+        const s = tr.insertCell(); s.textContent = r.status; s.className = r.status === "accepted" ? "acc" : "rej";
+        tr.insertCell().textContent = r.status === "accepted" ? r.reportId : r.errors.join("; ");
+      });
+      table.appendChild(t);
+    } catch (_) {
+      show(msg, "err", "Could not reach the server. Please try again.");
+    } finally { $("importBtn").disabled = false; }
+  });
+</script>
+</body>
+</html>

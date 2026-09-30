@@ -1,0 +1,43 @@
+# Python bytecode and test/tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local virtual environments
+.venv/
+venv/
+ENV/
+/backend/Include/
+/backend/Lib/
+/backend/Scripts/
+/backend/venv/
+/backend/pyvenv.cfg
+
+# Local secrets. Keep example configuration files in the repository.
+.env
+.env.*
+!.env.example
+!/backend/.env.example
+
+# Local databases and generated search indexes
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+/data/
+
+# Uploaded evidence is runtime data; retain the empty directory marker.
+/uploads/*
+!/uploads/.gitkeep
+
+# Frontend dependencies and generated build output
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# OS metadata
+.DS_Store
+Thumbs.db

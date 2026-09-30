@@ -1,0 +1,26 @@
+:root {
+  color-scheme: light;
+  font-family: 'DM Sans', 'Segoe UI', sans-serif;
+  --font-display: 'DM Serif Display', Georgia, serif;
+  --color-ink: #182522;
+  --color-ink-soft: #40514c;
+  --color-muted: #78837d;
+  --color-subtle: #a4ada7;
+  --color-paper: #f4f5ef;
+  --color-surface: #fffefa;
+  --color-surface-alt: #f8f8f3;
+  --color-line: #e6e8df;
+  --color-line-strong: #d5dbd0;
+  --color-brand: #174c42;
+  --color-brand-hover: #0e3d34;
+  --color-brand-wash: #e6f0eb;
+  --color-signal: #e9ad43;
+  --color-signal-wash: #fbf1d9;
+  --color-map: #df7b41;
+  --color-danger: #a64135;
+  --color-danger-wash: #f9e9e5;
+  --color-success: #347456;
+  --radius-sm: 4px;
+  --radius-md: 7px;
+  --shadow-panel: 0 1px 2px rgb(21 43 35 / 4%), 0 10px 28px rgb(21 43 35 / 3%);
+}
