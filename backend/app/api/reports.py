@@ -6,14 +6,15 @@ from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user_id
+from app.api.deps import get_current_user, get_current_user_id
 from app.config import get_settings
 from app.database import get_db
+from app.models.user import User
 from app.schemas.report import ImportSummary, ReportCreate, ReportOut
 from app.services import import_service, media_service, report_service
 from app.services.errors import ImageRejected, NotFound, ValidationFailed
 
-router = APIRouter(prefix="/reports", tags=["reports"])
+router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
 
 
 async def _read_upload(upload: UploadFile | None) -> media_service.ValidatedImage | None:
@@ -34,7 +35,7 @@ async def submit_report(
     location_name: str | None = Form(None),
     image: UploadFile | None = None,
     db: Session = Depends(get_db),
-    user_id: uuid.UUID | None = Depends(get_current_user_id),
+    user_id: uuid.UUID = Depends(get_current_user_id),
 ):
     """Web-form submission (multipart/form-data). `image` is optional."""
     raw = {"disaster_type": disaster_type, "description": description, "latitude": latitude,
@@ -48,30 +49,42 @@ async def submit_report(
 
 
 @router.post("/import/json", response_model=ImportSummary)
-async def import_json(request: Request, db: Session = Depends(get_db)):
+async def import_json(request: Request, db: Session = Depends(get_db),
+                      user: User = Depends(get_current_user)):
     """Body: JSON array of reports (or one object, or {"reports": [...]})."""
-    return import_service.import_json(db, await request.body())
+    return import_service.import_json(db, await request.body(), submitted_by=user.id)
 
 
 @router.post("/import/csv", response_model=ImportSummary)
-async def import_csv(request: Request, db: Session = Depends(get_db)):
+async def import_csv(request: Request, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
     """Body: raw CSV text with header row (Content-Type: text/csv)."""
-    return import_service.import_csv(db, await request.body())
+    return import_service.import_csv(db, await request.body(), submitted_by=user.id)
 
 
 @router.get("", response_model=list[ReportOut])
-def list_reports(limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
-    return report_service.list_reports(db, min(max(limit, 1), 200), max(offset, 0))
+def list_reports(limit: int = 50, offset: int = 0, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    owner = user.id if user.role == "USER" else None
+    return report_service.list_reports(db, min(max(limit, 1), 200), max(offset, 0), owner)
 
 
 @router.get("/{report_id}", response_model=ReportOut)
-def get_report(report_id: uuid.UUID, db: Session = Depends(get_db)):
-    return report_service.get_report(db, report_id)
+def get_report(report_id: uuid.UUID, db: Session = Depends(get_db),
+               user: User = Depends(get_current_user)):
+    report = report_service.get_report(db, report_id)
+    if user.role == "USER" and report.submitted_by != user.id:
+        raise NotFound("Report not found.")
+    return report
 
 
 @router.post("/{report_id}/media", response_model=ReportOut, status_code=201)
-async def attach_media(report_id: uuid.UUID, image: UploadFile, db: Session = Depends(get_db)):
+async def attach_media(report_id: uuid.UUID, image: UploadFile, db: Session = Depends(get_db),
+                       user: User = Depends(get_current_user)):
     """Attach an image to an already-created report."""
+    report = report_service.get_report(db, report_id)
+    if user.role == "USER" and report.submitted_by != user.id:
+        raise NotFound("Report not found.")
     validated = await _read_upload(image)
     if validated is None:
         raise ImageRejected("No image file was provided.", 422)
@@ -79,8 +92,11 @@ async def attach_media(report_id: uuid.UUID, image: UploadFile, db: Session = De
 
 
 @router.get("/{report_id}/image")
-def get_report_image(report_id: uuid.UUID, db: Session = Depends(get_db)):
+def get_report_image(report_id: uuid.UUID, db: Session = Depends(get_db),
+                     user: User = Depends(get_current_user)):
     report = report_service.get_report(db, report_id)
+    if user.role == "USER" and report.submitted_by != user.id:
+        raise NotFound("Report not found.")
     if report.image is None:
         raise NotFound("This report has no image.")
     path = media_service.absolute_path(report.image.storage_path)

@@ -8,8 +8,14 @@ Every accepted record becomes its own row in `incident_reports` (status `SUBMITT
 **Run it** (from `backend/`):
 ```bash
 pip install -r requirements.txt
-uvicorn app.main:app --reload      # then open http://localhost:8000/report-form
+Copy-Item .env.example .env  # configure AUTH_SECRET_KEY and local demo account passwords
+uvicorn app.main:app --reload      # then open http://localhost:8000/ to sign in
 pytest                             # run the tests
+```
+Authenticate first to save a cookie jar, then pass it with protected requests:
+```bash
+curl -c cookies.txt -X POST localhost:8000/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"user@demo.test","password":"<local demo password>","role":"USER"}'
 ```
 The React workspace lives in `frontend/`. For frontend development, start the backend as above, then run `npm install` and `npm run dev` from `frontend/`; open the URL printed by Vite. To serve a production build through FastAPI, run `npm run build` in `frontend/` and restart the backend. Frontend structure and extension conventions are documented in `frontend/README.md`.
 Config lives in `backend/app/config.py` (override with env vars, see `backend/.env.example`).
@@ -27,16 +33,19 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
-| Placeholder for the logged-in user (replace with JWT) | `backend/app/api/deps.py` |
+| Session authentication and current user | `backend/app/api/auth.py`, `backend/app/api/deps.py` |
 
 ### Endpoints
 | Method | Path | Purpose |
 |---|---|---|
+| POST | `/auth/login` | Verify credentials and selected role; sets an HTTP-only session cookie |
+| GET | `/auth/me` | Read the current authenticated account |
+| POST | `/auth/logout` | Clear the session cookie |
 | POST | `/reports` | Submit one report (multipart form, optional `image`) |
 | POST | `/reports/import/json` | Bulk import, JSON body |
 | POST | `/reports/import/csv` | Bulk import, CSV body (`Content-Type: text/csv`) |
 | POST | `/reports/{id}/media` | Attach an image to an existing report |
-| GET | `/reports`, `/reports/{id}`, `/reports/{id}/image` | Read (placeholders – add ownership/RBAC) |
+| GET | `/reports`, `/reports/{id}`, `/reports/{id}/image` | Read; USER is limited to owned reports |
 
 **Report fields** (from the Master Plan §7.1): `disaster_type` (FLOOD, FIRE, EARTHQUAKE, LANDSLIDE, CYCLONE,
 ROAD_ACCIDENT, BUILDING_COLLAPSE, MEDICAL_EMERGENCY, OTHER), `description`, `latitude` (-90..90),
@@ -45,15 +54,16 @@ ROAD_ACCIDENT, BUILDING_COLLAPSE, MEDICAL_EMERGENCY, OTHER), `description`, `lat
 ```bash
 curl -F disaster_type=FLOOD -F "description=Water entered houses" \
      -F latitude=10.027 -F longitude=76.308 -F location_name=Edappally \
-     -F image=@photo.jpg http://localhost:8000/reports
+      -F image=@photo.jpg -b cookies.txt http://localhost:8000/reports
 ```
+  Report and import endpoints require a session cookie from `/auth/login`.
 Success → `201` with the report (`id`, `status`, `submitted_at`, `image` or `null`).
 Failure → `{"message": "Invalid report.", "errors": ["description is required", ...]}`
 (`422` validation, `413` image too large, `415` unsupported image, `400` malformed import, `500` storage failure – generic message, details only in server logs).
 
 ### JSON import
 ```bash
-curl -X POST localhost:8000/reports/import/json -H 'Content-Type: application/json' -d '[
+curl -b cookies.txt -X POST localhost:8000/reports/import/json -H 'Content-Type: application/json' -d '[
   {"disaster_type":"FIRE","description":"Fire in a building","latitude":10.0,"longitude":76.3},
   {"disaster_type":"FLOOD","description":"","latitude":10.1,"longitude":76.2},
   {"disaster_type":"FLOOD","description":"Road under water","latitude":10.2,"longitude":76.1}]'
@@ -73,7 +83,7 @@ disaster_type,description,latitude,longitude,location_name
 FIRE,Fire reported in a building,10.0,76.3,Kochi
 FLOOD,"Water rising, road blocked",10.1,76.2,
 ```
-`curl -X POST localhost:8000/reports/import/csv -H 'Content-Type: text/csv' --data-binary @reports.csv`
+`curl -b cookies.txt -X POST localhost:8000/reports/import/csv -H 'Content-Type: text/csv' --data-binary @reports.csv`
 Same response as JSON; `record` = data row number (header not counted). A missing required column,
 unparseable CSV or non-UTF-8 file returns `400` and nothing is stored. Limit: 1000 records (`MAX_IMPORT_RECORDS`).
 
@@ -99,6 +109,7 @@ Hook it up wherever you like (e.g. after `create_report`); the submission code d
 Note: the design docs list *pgvector* for similarity – FAISS was requested, so it is kept isolated and easy to swap.
 
 ### Notes for teammates
-- **Auth/RBAC:** `submitted_by` is `NULL` until `api/deps.py::get_current_user_id` is wired to JWT.
-- **Schema:** tables are created by `init_db()` for dev; move to Alembic and add the `users` FK when that exists.
+- **Auth/RBAC:** Report and import endpoints require a signed session. `USER` accounts can view their own reports; `MANAGEMENT` and `ADMIN` can view all submitted reports. Add role checks to operational endpoints as those modules are implemented.
+- **Local demo accounts:** Configure `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` in the ignored `backend/.env`. Never commit that file or reuse demo passwords in production. Set `AUTH_COOKIE_SECURE=true` behind HTTPS.
+- **Schema:** tables are created by `init_db()` for dev; move to Alembic and add the `submitted_by` foreign key to `users.id`.
 - **Not done here (other owners):** incident creation from a report, priority, PostGIS, review workflow, video upload, `/reports/my`.

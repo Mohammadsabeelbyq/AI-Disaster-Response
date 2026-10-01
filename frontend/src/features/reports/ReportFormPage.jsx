@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { ArrowRight, Check, ImagePlus, MapPin, Upload, X } from 'lucide-react';
 import { submitReport } from '../../api/reports.js';
+import LocationPicker from './LocationPicker.jsx';
 
 const disasterTypes = [
   ['FLOOD', 'Flood'], ['FIRE', 'Fire'], ['EARTHQUAKE', 'Earthquake'], ['LANDSLIDE', 'Landslide'],
@@ -15,6 +16,7 @@ export default function ReportFormPage() {
   const [selectedFile, setSelectedFile] = useState(null);
   const [message, setMessage] = useState(null);
   const [submitting, setSubmitting] = useState(false);
+  const [location, setLocation] = useState({ latitude: '', longitude: '', location_name: '' });
 
   function handleFile(file) {
     setMessage(null);
@@ -37,12 +39,17 @@ export default function ReportFormPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     setMessage(null);
+    if (!location.latitude || !location.longitude) {
+      setMessage({ kind: 'error', text: 'Select a location on the map before submitting.' });
+      return;
+    }
     setSubmitting(true);
     try {
       const result = await submitReport(new FormData(formRef.current));
       setMessage({ kind: 'success', text: `Report received. Reference ${result.id}${result.image ? ' · photo attached' : ''}.` });
       formRef.current.reset();
       setSelectedFile(null);
+      setLocation({ latitude: '', longitude: '', location_name: '' });
     } catch (requestError) {
       setMessage({ kind: 'error', text: requestError.message });
     } finally { setSubmitting(false); }
@@ -59,11 +66,12 @@ export default function ReportFormPage() {
           <div className="form-section-heading"><span className="form-step">01</span><div><h2>Incident details</h2><p>Fields marked with * are required.</p></div></div>
           <label className="field"><span>Incident type <b>*</b></span><select name="disaster_type" required defaultValue=""><option value="" disabled>Select a type</option>{disasterTypes.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="field"><span>Description <b>*</b></span><textarea name="description" required minLength="1" maxLength="5000" rows="5" placeholder="What is happening? Who or what is affected?" /></label>
+          <LocationPicker value={location} onChange={setLocation} />
           <div className="field-grid">
-            <label className="field"><span>Latitude <b>*</b></span><input name="latitude" type="number" step="any" min="-90" max="90" placeholder="10.027" required /></label>
-            <label className="field"><span>Longitude <b>*</b></span><input name="longitude" type="number" step="any" min="-180" max="180" placeholder="76.308" required /></label>
+            <label className="field"><span>Latitude <b>*</b></span><input name="latitude" type="number" step="any" min="-90" max="90" placeholder="Choose on map" value={location.latitude} readOnly required /></label>
+            <label className="field"><span>Longitude <b>*</b></span><input name="longitude" type="number" step="any" min="-180" max="180" placeholder="Choose on map" value={location.longitude} readOnly required /></label>
           </div>
-          <label className="field"><span>Location name <small>OPTIONAL</small></span><div className="input-with-icon"><MapPin size={17} /><input name="location_name" maxLength="255" placeholder="Neighbourhood, road, or landmark" /></div></label>
+          <label className="field"><span>Location name <small>AUTO-FILLED</small></span><div className="input-with-icon"><MapPin size={17} /><input name="location_name" maxLength="255" placeholder="Choose a point on the map" value={location.location_name} readOnly /></div></label>
           <div className="field"><span>Photo <small>OPTIONAL</small></span>
             <input ref={fileRef} className="visually-hidden" name="image" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
             {selectedFile ? (

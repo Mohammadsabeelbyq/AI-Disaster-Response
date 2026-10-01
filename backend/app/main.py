@@ -4,12 +4,16 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from app.api import reports
-from app.database import init_db
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
+
+from app.api import auth, reports
+from app.database import SessionLocal, init_db
+from app.services.auth_service import seed_demo_accounts
 from app.services.errors import AppError
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
@@ -20,10 +24,13 @@ FRONTEND_INDEX = FRONTEND_DIST_DIR / "index.html"
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    with SessionLocal() as db:
+        seed_demo_accounts(db)
     yield
 
 
 app = FastAPI(title="AI Disaster Response - Core Engine", lifespan=lifespan)
+app.include_router(auth.router)
 app.include_router(reports.router)
 if (FRONTEND_DIST_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_DIR / "assets"), name="frontend-assets")

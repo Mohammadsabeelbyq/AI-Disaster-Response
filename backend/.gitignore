@@ -4,6 +4,7 @@
 /Scripts/
 /venv/
 /pyvenv.cfg
+/.lock
 
 # Python-generated files
 __pycache__/

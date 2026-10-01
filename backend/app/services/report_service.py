@@ -71,7 +71,10 @@ def get_report(db: Session, report_id: uuid.UUID) -> IncidentReport:
     return report
 
 
-def list_reports(db: Session, limit: int = 50, offset: int = 0) -> list[IncidentReport]:
+def list_reports(db: Session, limit: int = 50, offset: int = 0,
+         submitted_by: uuid.UUID | None = None) -> list[IncidentReport]:
     stmt = (select(IncidentReport).order_by(IncidentReport.submitted_at.desc())
             .limit(limit).offset(offset))
+    if submitted_by is not None:
+        stmt = stmt.where(IncidentReport.submitted_by == submitted_by)
     return list(db.scalars(stmt))

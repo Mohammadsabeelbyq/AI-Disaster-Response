@@ -24,7 +24,7 @@ class IncidentReport(Base):
     __tablename__ = "incident_reports"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
-    # No FK yet: the users table belongs to the auth/backend owner. Add FK users.id later.
+    # Add the users.id foreign key alongside the project's Alembic migration setup.
     submitted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     disaster_type: Mapped[str] = mapped_column(String(50), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)

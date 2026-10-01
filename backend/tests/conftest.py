@@ -7,6 +7,13 @@ os.environ["DATABASE_URL"] = f"sqlite:///{_tmp}/test.db"
 os.environ["UPLOAD_DIR"] = f"{_tmp}/uploads"
 os.environ["FAISS_INDEX_DIR"] = f"{_tmp}/faiss"
 os.environ["MAX_IMAGE_BYTES"] = str(1024 * 1024)  # 1 MB so the oversize test stays small
+os.environ["AUTH_SECRET_KEY"] = "tests-only-secret-key-with-enough-entropy"
+os.environ["DEMO_USER_EMAIL"] = "user@example.test"
+os.environ["DEMO_USER_PASSWORD"] = "test-user-password-123"
+os.environ["DEMO_COORDINATOR_EMAIL"] = "coordinator@example.test"
+os.environ["DEMO_COORDINATOR_PASSWORD"] = "test-coordinator-password-123"
+os.environ["DEMO_ADMIN_EMAIL"] = "admin@example.test"
+os.environ["DEMO_ADMIN_PASSWORD"] = "test-admin-password-123"
 
 import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
@@ -27,6 +34,12 @@ def client():
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     with TestClient(fastapi_app, raise_server_exceptions=False) as c:
+        response = c.post("/auth/login", json={
+            "email": os.environ["DEMO_USER_EMAIL"],
+            "password": os.environ["DEMO_USER_PASSWORD"],
+            "role": "USER",
+        })
+        assert response.status_code == 200, response.text
         yield c
 
 

@@ -2,6 +2,8 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 sqlalchemy>=2.0
 pydantic>=2.6
+PyJWT>=2.8
+pwdlib[argon2]>=0.2
 python-multipart>=0.0.9   # multipart form + file upload
 # --- tests ---
 pytest>=8.0

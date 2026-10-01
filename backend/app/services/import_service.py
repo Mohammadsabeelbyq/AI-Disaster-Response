@@ -5,6 +5,7 @@ never blocks (or rolls back) the good ones."""
 import csv
 import io
 import json
+import uuid
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -76,7 +77,8 @@ def format_validation_errors(exc: ValidationError) -> list[str]:
     return errors
 
 
-def _import_one(db: Session, index: int, record) -> ImportRecordResult:
+def _import_one(db: Session, index: int, record,
+                submitted_by: uuid.UUID | None) -> ImportRecordResult:
     def rejected(errors: list[str]) -> ImportRecordResult:
         return ImportRecordResult(record=index, status="rejected", errors=errors)
 
@@ -91,27 +93,30 @@ def _import_one(db: Session, index: int, record) -> ImportRecordResult:
     except ValidationError as exc:
         return rejected(format_validation_errors(exc))
     try:
-        report = report_service.create_report(db, data)
+        report = report_service.create_report(db, data, submitted_by=submitted_by)
     except AppError as exc:
         return rejected([exc.message])
     return ImportRecordResult(record=index, status="accepted", reportId=report.id)
 
 
-def import_records(db: Session, records: list) -> ImportSummary:
+def import_records(db: Session, records: list,
+                   submitted_by: uuid.UUID | None = None) -> ImportSummary:
     limit = get_settings().max_import_records
     if not records:
         raise ImportFormatError("The import contains no records.")
     if len(records) > limit:
         raise ImportFormatError(f"Too many records ({len(records)}). Limit is {limit} per import.")
-    results = [_import_one(db, i, rec) for i, rec in enumerate(records, start=1)]
+    results = [_import_one(db, i, rec, submitted_by) for i, rec in enumerate(records, start=1)]
     accepted = sum(r.status == "accepted" for r in results)
     return ImportSummary(
         total=len(results), accepted=accepted, rejected=len(results) - accepted, results=results)
 
 
-def import_json(db: Session, raw: bytes) -> ImportSummary:
-    return import_records(db, parse_json(raw))
+def import_json(db: Session, raw: bytes,
+                submitted_by: uuid.UUID | None = None) -> ImportSummary:
+    return import_records(db, parse_json(raw), submitted_by)
 
 
-def import_csv(db: Session, raw: bytes) -> ImportSummary:
-    return import_records(db, parse_csv(raw))
+def import_csv(db: Session, raw: bytes,
+               submitted_by: uuid.UUID | None = None) -> ImportSummary:
+    return import_records(db, parse_csv(raw), submitted_by)
