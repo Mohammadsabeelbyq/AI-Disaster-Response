@@ -84,6 +84,11 @@ The response also includes `extraction`: extracted facts, per-field confidence (
 ### Optional image understanding (Epic 2.3)
 The default is off and no external service is required for Epics 1, 2.1, 2.2, 2.4 or 2.5. To enable advisory image cues, set `ENABLE_IMAGE_ANALYSIS=true`, provide a Google Gemini API key as `GEMINI_API_KEY`, and optionally override `GEMINI_MODEL` (default `gemini-2.5-flash`). Only attached images are sent to Gemini. Each returned cue includes confidence and evidence text, and remains linked to the attached image. Calls have a timeout; failures are recorded as `FAILED` and do not reject a report. When enabled, image bytes leave this deployment, so configure this only after approving the provider and data-handling policy. No API key is needed from you for the rest of Epic 2.
 
+### Epic 2.1 – description fact extraction
+Accepted web-form and JSON/CSV reports receive a separate `extraction` object in report responses and `GET /reports/{id}`. The current `rules-v1` extractor returns evidence-backed candidates for disaster category, severity cues, urgency, affected-person count, hazards, requested assistance and location mentions. Each evidence item includes the exact source text and character offsets. Unsupported or conflicting values remain `null`/empty; the original submitted description and selected form fields are not overwritten. Extraction errors are logged and marked `FAILED` without rejecting a valid report.
+
+This is a deterministic, bounded MVP rather than general-purpose named-entity understanding. Location phrases are mentions only; they are not geocoded or treated as verified coordinates. Extracted values are advisory and must be reviewed before operational use. Results are stored in `report_extractions` so existing `incident_reports` tables do not need column changes. Run `./.venv/bin/python -m pytest backend/tests/test_text_extraction.py backend/tests/test_report_api.py backend/tests/test_import.py -q` from the repository root to test extraction, persistence, and failure handling.
+
 ### JSON import
 ```bash
 curl -b cookies.txt -X POST localhost:8000/reports/import/json -H 'Content-Type: application/json' -d '[

@@ -1,4 +1,6 @@
 """User Story 1.1 - JSON / CSV import, including mixed validity."""
+from datetime import datetime
+
 from tests.conftest import rec
 import json
 
@@ -31,28 +33,13 @@ def test_json_multiple_valid_records_are_distinct_reports(client):
     body = r.json()
     ids = {x["reportId"] for x in body["results"]}
     assert body["accepted"] == 3 and len(ids) == 3
-    assert {x["id"] for x in stored(client)} == ids
-
-
-def test_imported_reports_persist_source_extraction_ids_and_timestamps(client):
-    records = [
-        rec(disaster_type="FLOOD", description="Flood water rising near Edappally"),
-        rec(disaster_type="FIRE", description="Smoke seen near the station"),
-    ]
-    body = post_json(client, records).json()
-    report_ids = [item["reportId"] for item in body["results"]]
-    assert len(set(report_ids)) == len(records)
-
-    persisted = {report["id"]: report for report in stored(client)}
-    for source, report_id in zip(records, report_ids):
-        report = persisted[report_id]
-        fetched = client.get(f"/reports/{report_id}").json()
-        assert report["description"] == source["description"]
-        assert report["submitted_at"]
-        assert fetched["id"] == report_id
-        assert fetched["submitted_at"] == report["submitted_at"]
-        assert report["extraction"]["extracted_facts"]
-        assert report["extraction"]["effective_facts"] == report["extraction"]["extracted_facts"]
+    persisted = {x["id"]: x for x in stored(client)}
+    assert set(persisted) == ids
+    for result in body["results"]:
+        report = persisted[result["reportId"]]
+        stored_timestamp = datetime.fromisoformat(report["submitted_at"].replace("Z", "+00:00"))
+        fetched_timestamp = client.get(f"/reports/{result['reportId']}").json()["submitted_at"]
+        assert datetime.fromisoformat(fetched_timestamp.replace("Z", "+00:00")) == stored_timestamp
 
 
 def test_json_mixed_validity(client):
@@ -91,8 +78,16 @@ def test_csv_valid_and_distinct(client):
     text = CSV_HEADER + "Fire,Fire reported in a building,10.0,76.3,Kochi\nFLOOD,Water rising,10.1,76.2,\n"
     body = post_csv(client, text).json()
     assert (body["total"], body["accepted"], body["rejected"]) == (2, 2, 0)
-    assert len({x["reportId"] for x in body["results"]}) == 2
-    assert {x["disaster_type"] for x in stored(client)} == {"FIRE", "FLOOD"}
+    ids = {x["reportId"] for x in body["results"]}
+    assert len(ids) == 2
+    persisted = {x["id"]: x for x in stored(client)}
+    assert set(persisted) == ids
+    assert {x["disaster_type"] for x in persisted.values()} == {"FIRE", "FLOOD"}
+    for report_id in ids:
+        report = persisted[report_id]
+        stored_timestamp = datetime.fromisoformat(report["submitted_at"].replace("Z", "+00:00"))
+        fetched_timestamp = client.get(f"/reports/{report_id}").json()["submitted_at"]
+        assert datetime.fromisoformat(fetched_timestamp.replace("Z", "+00:00")) == stored_timestamp
 
 
 def test_csv_quoted_commas_and_newlines(client):

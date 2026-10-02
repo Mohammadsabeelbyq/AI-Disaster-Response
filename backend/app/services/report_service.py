@@ -11,6 +11,7 @@ from app.models import IncidentMedia, IncidentReport, ReportStatus
 from app.schemas.report import ReportCreate
 from app.services import extraction_service, media_service
 from app.services.errors import Conflict, NotFound, StorageFailure
+from app.services.incident_tracking import ensure_report_tracking_metadata
 from app.services.media_service import ValidatedImage
 
 log = logging.getLogger(__name__)
@@ -29,6 +30,7 @@ def create_report(db: Session, data: ReportCreate, image: ValidatedImage | None 
     If anything fails nothing is left behind: no report row and no orphan file."""
     report = IncidentReport(
         submitted_by=submitted_by, status=ReportStatus.SUBMITTED, **data.model_dump())
+    ensure_report_tracking_metadata(report)
     stored_path = None
     try:
         if image is not None:
