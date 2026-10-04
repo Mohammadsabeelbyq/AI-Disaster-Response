@@ -6,12 +6,12 @@ from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, get_current_user_id
+from app.api.deps import get_current_user, get_current_user_id, require_roles
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
-from app.schemas.report import ImportSummary, ReportCreate, ReportOut
-from app.services import import_service, media_service, report_service
+from app.schemas.report import ExtractionCorrection, ImportSummary, ReportCreate, ReportOut
+from app.services import extraction_service, import_service, media_service, report_service
 from app.services.errors import ImageRejected, NotFound, ValidationFailed
 
 router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
@@ -75,6 +75,23 @@ def get_report(report_id: uuid.UUID, db: Session = Depends(get_db),
     report = report_service.get_report(db, report_id)
     if user.role == "USER" and report.submitted_by != user.id:
         raise NotFound("Report not found.")
+    return report
+
+
+@router.patch("/{report_id}/extraction", response_model=ReportOut)
+def correct_report_extraction(
+    report_id: uuid.UUID,
+    correction: ExtractionCorrection,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("MANAGEMENT", "ADMIN")),
+):
+    report = report_service.get_report(db, report_id)
+    if report.extraction is None:
+        raise NotFound("Report extraction not found.")
+    extraction_service.correct_extraction(
+        report.extraction, user.id, correction.facts.model_dump())
+    db.commit()
+    db.refresh(report)
     return report
 
 

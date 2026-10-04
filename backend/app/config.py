@@ -25,6 +25,9 @@ class Settings:
     max_import_records: int
     faiss_index_dir: Path
     embedding_model: str
+    enable_image_analysis: bool
+    gemini_api_key: str | None
+    gemini_model: str
     auth_secret_key: str | None
     auth_cookie_secure: bool
     auth_token_expire_minutes: int
@@ -41,6 +44,9 @@ def get_settings() -> Settings:
         faiss_index_dir=Path(os.getenv("FAISS_INDEX_DIR", "../data/faiss")).resolve(),
         embedding_model=os.getenv(
             "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
+        enable_image_analysis=os.getenv("ENABLE_IMAGE_ANALYSIS", "false").lower() == "true",
+        gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
         auth_secret_key=os.getenv("AUTH_SECRET_KEY") or None,
         auth_cookie_secure=os.getenv("AUTH_COOKIE_SECURE", "false").lower() == "true",
         auth_token_expire_minutes=int(os.getenv("AUTH_TOKEN_EXPIRE_MINUTES", "480")),

@@ -15,6 +15,7 @@ from app.api import auth, reports
 from app.database import SessionLocal, init_db
 from app.services.auth_service import seed_demo_accounts
 from app.services.errors import AppError
+from app.services.report_service import backfill_missing_extractions
 
 FRONTEND_DIR = Path(__file__).resolve().parents[2] / "frontend"
 FRONTEND_DIST_DIR = FRONTEND_DIR / "dist"
@@ -26,6 +27,7 @@ async def lifespan(_: FastAPI):
     init_db()
     with SessionLocal() as db:
         seed_demo_accounts(db)
+        backfill_missing_extractions(db)
     yield
 
 

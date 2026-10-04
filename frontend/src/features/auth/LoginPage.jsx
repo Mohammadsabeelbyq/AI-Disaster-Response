@@ -99,7 +99,7 @@ export default function LoginPage() {
         </form>
 
         {status && <div className="notice notice--error login-status" role="alert">{status}</div>}
-        <p className="login-prototype-note">Sign-in is verified by the backend. Coordinator and administration workspaces will be added with their modules.</p>
+        <p className="login-prototype-note">Your account role and permissions are verified by the backend.</p>
       </div>
     </section>
   );

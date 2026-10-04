@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import IncidentMedia, IncidentReport, ReportStatus
 from app.schemas.report import ReportCreate
-from app.services import media_service
+from app.services import extraction_service, media_service
 from app.services.errors import Conflict, NotFound, StorageFailure
 from app.services.media_service import ValidatedImage
 
@@ -34,6 +34,7 @@ def create_report(db: Session, data: ReportCreate, image: ValidatedImage | None 
         if image is not None:
             stored_path = media_service.store_image(image)
             report.media.append(_media_row(image, stored_path))
+        report.extraction = extraction_service.create_extraction(report, image)
         db.add(report)
         db.commit()
     except (SQLAlchemyError, OSError) as exc:
@@ -78,3 +79,18 @@ def list_reports(db: Session, limit: int = 50, offset: int = 0,
     if submitted_by is not None:
         stmt = stmt.where(IncidentReport.submitted_by == submitted_by)
     return list(db.scalars(stmt))
+
+
+def backfill_missing_extractions(db: Session) -> None:
+    """Create conservative rule extractions for reports saved before Epic 2 was enabled."""
+    reports = db.scalars(
+        select(IncidentReport).where(~IncidentReport.extraction.has())
+    ).all()
+    if not reports:
+        return
+    for report in reports:
+        extraction = extraction_service.create_extraction(report)
+        if report.media:
+            extraction.image_analysis_status = "LEGACY_NOT_ANALYZED"
+        report.extraction = extraction
+    db.commit()

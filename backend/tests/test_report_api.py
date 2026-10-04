@@ -15,7 +15,104 @@ def test_text_only_report_accepted(client, valid_form):
     body = r.json()
     assert body["id"] and body["submitted_at"] and body["status"] == "SUBMITTED"
     assert body["image"] is None
+    assert body["submitted_at"].endswith("+00:00") or body["submitted_at"].endswith("Z")
+    extraction = body["extraction"]
+    assert extraction["extracted_facts"]["incident_category"] == "FLOOD"
+    assert extraction["effective_facts"] == extraction["extracted_facts"]
+    assert "incident_category" in extraction["confidence"]
+    assert extraction["evidence"]["incident_category"]
+    assert extraction["image_analysis_status"] == "NOT_PROVIDED"
     assert client.get(f"/reports/{body['id']}").json()["description"] == valid_form["description"]
+
+
+def test_text_extraction_leaves_unsupported_facts_unknown(client, valid_form):
+    valid_form["description"] = "A flood is reported near Edappally. Please send rescue and clean water for 12 people."
+    body = client.post("/reports", data=valid_form).json()
+    facts = body["extraction"]["extracted_facts"]
+    assert facts["urgency"] == "HIGH"
+    assert facts["affected_persons"] == 12
+    assert facts["requested_assistance"] == ["RESCUE", "WATER"]
+    assert facts["location_mentions"]
+    assert "severity_cues" not in body["extraction"]["confidence"]
+
+
+def test_coordinator_correction_preserves_source_and_extraction_history(client, valid_form):
+    original = client.post("/reports", data=valid_form).json()
+    client.post("/auth/logout")
+    assert client.post("/auth/login", json={
+        "email": "coordinator@example.test", "password": "test-coordinator-password-123",
+        "role": "MANAGEMENT",
+    }).status_code == 200
+    facts = {**original["extraction"]["extracted_facts"], "urgency": "CRITICAL"}
+    response = client.patch(f"/reports/{original['id']}/extraction", json={"facts": facts})
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["description"] == original["description"]
+    assert updated["extraction"]["extracted_facts"] == original["extraction"]["extracted_facts"]
+    assert updated["extraction"]["corrected_facts"]["urgency"] == "CRITICAL"
+    assert updated["extraction"]["effective_facts"]["urgency"] == "CRITICAL"
+    assert updated["extraction"]["reviews"][0]["corrected_facts"]["urgency"] == "CRITICAL"
+    assert updated["extraction"]["reviewed_by"]
+    assert updated["extraction"]["reviewed_at"].endswith("+00:00") or updated["extraction"]["reviewed_at"].endswith("Z")
+
+
+def test_reporter_cannot_correct_extraction(client, valid_form):
+    report_id = client.post("/reports", data=valid_form).json()["id"]
+    response = client.patch(f"/reports/{report_id}/extraction", json={"facts": {}})
+    assert response.status_code == 403
+
+
+def test_existing_report_gets_extraction_backfilled(client, valid_form):
+    from uuid import UUID
+    from app.database import SessionLocal
+    from app.models.report import IncidentReport
+    from app.services.report_service import backfill_missing_extractions
+
+    report_id = client.post("/reports", data=valid_form).json()["id"]
+    with SessionLocal() as db:
+        report = db.get(IncidentReport, UUID(report_id))
+        report.extraction = None
+        db.commit()
+        backfill_missing_extractions(db)
+    assert client.get(f"/reports/{report_id}").json()["extraction"]["effective_facts"]
+
+
+def test_optional_image_analysis_returns_advisory_cue(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import extraction_service
+
+    monkeypatch.setattr(extraction_service, "get_settings", lambda: SimpleNamespace(
+        enable_image_analysis=True, gemini_api_key="test-key", gemini_model="test-model"))
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text":
+                '{"cues":[{"cue":"standing water","confidence":0.91,"evidence":"water covers the street"}]}'}]}}]}
+
+    def fake_post(url, **kwargs):
+        captured.update(url=url, **kwargs)
+        return Response()
+
+    monkeypatch.setattr(extraction_service.httpx, "post", fake_post)
+    status, cues = extraction_service.analyze_image(b"image-bytes", "image/png")
+    assert status == "COMPLETED"
+    assert cues == [{"cue": "standing water", "confidence": 0.91,
+                     "evidence": "water covers the street"}]
+    assert captured["headers"]["x-goog-api-key"] == "test-key"
+
+
+def test_failed_optional_image_analysis_does_not_reject_report(client, valid_form, monkeypatch):
+    from app.services import extraction_service
+
+    monkeypatch.setattr(extraction_service, "analyze_image", lambda *_: ("FAILED", None))
+    response = client.post("/reports", data=valid_form,
+                           files={"image": ("evidence.png", PNG, "image/png")})
+    assert response.status_code == 201
+    assert response.json()["extraction"]["image_analysis_status"] == "FAILED"
 
 
 def test_missing_image_part_is_fine(client, valid_form):

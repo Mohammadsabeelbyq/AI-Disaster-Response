@@ -4,6 +4,7 @@ import { useAuth } from './features/auth/AuthProvider.jsx';
 import LoginPage from './features/auth/LoginPage.jsx';
 import ImportPage from './features/reports/ImportPage.jsx';
 import ReportFormPage from './features/reports/ReportFormPage.jsx';
+import ReviewPage from './features/reports/ReviewPage.jsx';
 
 export default function App() {
   const { user, loading, signOut } = useAuth();
@@ -21,6 +22,9 @@ export default function App() {
           <Route path="/report-form" element={<Navigate to="/intake" replace />} />
           <Route path="/intake" element={<ReportFormPage />} />
           <Route path="/import" element={<ImportPage />} />
+          {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
+            <Route path="/review" element={<ReviewPage />} />
+          )}
         </Route>
         <Route path="*" element={<Navigate to={user ? '/' : '/login'} replace />} />
       </Routes>

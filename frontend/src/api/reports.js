@@ -11,3 +11,15 @@ export function importReports(kind, content) {
     body: content,
   });
 }
+
+export function listReports() {
+  return request('/reports?limit=200');
+}
+
+export function correctExtraction(reportId, facts) {
+  return request(`/reports/${reportId}/extraction`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ facts }),
+  });
+}

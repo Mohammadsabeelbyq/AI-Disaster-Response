@@ -36,6 +36,8 @@ class IncidentReport(Base):
 
     media: Mapped[list["IncidentMedia"]] = relationship(
         back_populates="report", cascade="all, delete-orphan")
+    extraction: Mapped["ReportExtraction | None"] = relationship(
+        back_populates="report", cascade="all, delete-orphan", uselist=False)
 
     @property
     def image(self) -> "IncidentMedia | None":

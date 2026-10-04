@@ -1,6 +1,6 @@
 """Pydantic schemas for report submission, import and responses."""
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -51,6 +51,57 @@ class MediaOut(BaseModel):
     url: str
 
 
+class ExtractedFacts(BaseModel):
+    incident_category: str | None = None
+    severity_cues: list[str] = Field(default_factory=list)
+    urgency: str | None = None
+    affected_persons: int | None = Field(default=None, ge=0)
+    hazards: list[str] = Field(default_factory=list)
+    requested_assistance: list[str] = Field(default_factory=list)
+    location_mentions: list[str] = Field(default_factory=list)
+
+
+class ExtractionReviewOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    actor_id: uuid.UUID
+    previous_facts: ExtractedFacts
+    corrected_facts: ExtractedFacts
+    created_at: datetime
+
+    @field_validator("created_at", mode="before")
+    @classmethod
+    def _ensure_utc_created_at(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class ExtractionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    extractor_version: str
+    extracted_facts: ExtractedFacts
+    corrected_facts: ExtractedFacts | None
+    effective_facts: ExtractedFacts
+    confidence: dict[str, float]
+    evidence: dict[str, list[str]]
+    image_analysis_status: str
+    image_cues: list[dict] | None
+    reviewed_by: uuid.UUID | None
+    reviewed_at: datetime | None
+    reviews: list[ExtractionReviewOut]
+
+    @field_validator("reviewed_at", mode="before")
+    @classmethod
+    def _ensure_utc_reviewed_at(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
+
+
+class ExtractionCorrection(BaseModel):
+    facts: ExtractedFacts
+
+
 class ReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
@@ -62,6 +113,14 @@ class ReportOut(BaseModel):
     status: str
     submitted_at: datetime
     image: MediaOut | None = None
+    extraction: ExtractionOut | None = None
+
+    @field_validator("submitted_at", mode="before")
+    @classmethod
+    def _ensure_utc_timestamp(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class ImportRecordResult(BaseModel):

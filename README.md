@@ -1,9 +1,11 @@
 # AI Disaster Response – Core Engine
 
-## Incident Reporting module (Epic 1: stories 1.1 and 1.2)
+## Incident Reporting and Understanding (Epics 1 and 2)
 
-Lets a user submit an incident through a web form, or bulk-import JSON / CSV, with an optional photo.
-Every accepted record becomes its own row in `incident_reports` (status `SUBMITTED`).
+Users can submit incidents through a web form or bulk-import JSON / CSV, with optional photo evidence.
+Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`) with a unique UUID and UTC submission timestamp. A separate `report_extractions` row stores evidence-linked, confidence-scored text facts. Original source fields are never overwritten by extraction or coordinator corrections.
+
+Epic 1 stories 1.1–1.5 and Epic 2 stories 2.1–2.5 are implemented. Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory and opt-in; without configuration the report is still accepted and its extraction reports `DISABLED`.
 
 **Run it** (from `backend/`):
 ```bash
@@ -26,11 +28,13 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 |---|---|
 | HTTP endpoints (thin) | `backend/app/api/reports.py` |
 | Create / read reports (**only place that writes reports**) | `backend/app/services/report_service.py` |
+| Text extraction, evidence, optional image cues, corrections | `backend/app/services/extraction_service.py` |
 | JSON / CSV parsing + per-record results | `backend/app/services/import_service.py` |
 | Image validation + file storage | `backend/app/services/media_service.py` |
 | Error types → HTTP status | `backend/app/services/errors.py`, `app/main.py` |
 | Validation rules / disaster types / image types | `backend/app/schemas/report.py`, `backend/app/config.py` |
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
+| Extraction and review history | `backend/app/models/extraction.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
 | Session authentication and current user | `backend/app/api/auth.py`, `backend/app/api/deps.py` |
@@ -60,6 +64,13 @@ curl -F disaster_type=FLOOD -F "description=Water entered houses" \
 Success → `201` with the report (`id`, `status`, `submitted_at`, `image` or `null`).
 Failure → `{"message": "Invalid report.", "errors": ["description is required", ...]}`
 (`422` validation, `413` image too large, `415` unsupported image, `400` malformed import, `500` storage failure – generic message, details only in server logs).
+The response also includes `extraction`: extracted facts, per-field confidence (0–1), source evidence, image-analysis status, optional advisory image cues, and any coordinator correction history. A missing confidence entry means the extractor did not find sufficient evidence for that field. Downstream workflows should consume `extraction.effective_facts`, which selects corrected values when present and otherwise uses the original extraction.
+
+### Coordinator review (Epics 1.5 and 2.4–2.5)
+`MANAGEMENT` and `ADMIN` accounts can open the **Review** workspace to compare the original submission with extracted facts, evidence and confidence. Corrections are saved separately and retain before/after snapshots, actor and timestamp; the original description and first-pass extraction remain unchanged. The API is `PATCH /reports/{id}/extraction` with `{"facts": { ... }}`. Reporters receive `403` for correction attempts.
+
+### Optional image understanding (Epic 2.3)
+The default is off and no external service is required for Epics 1, 2.1, 2.2, 2.4 or 2.5. To enable advisory image cues, set `ENABLE_IMAGE_ANALYSIS=true`, provide a Google Gemini API key as `GEMINI_API_KEY`, and optionally override `GEMINI_MODEL` (default `gemini-2.5-flash`). Only attached images are sent to Gemini. Each returned cue includes confidence and evidence text, and remains linked to the attached image. Calls have a timeout; failures are recorded as `FAILED` and do not reject a report. When enabled, image bytes leave this deployment, so configure this only after approving the provider and data-handling policy. No API key is needed from you for the rest of Epic 2.
 
 ### JSON import
 ```bash
