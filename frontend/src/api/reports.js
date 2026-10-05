@@ -4,6 +4,10 @@ export function submitReport(formData) {
   return request('/reports', { method: 'POST', body: formData });
 }
 
+export function getReport(reportId) {
+  return request(`/reports/${encodeURIComponent(reportId)}`);
+}
+
 export function importReports(kind, content) {
   return request(`/reports/import/${kind}`, {
     method: 'POST',

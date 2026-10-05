@@ -1,12 +1,13 @@
 """Tables from the Database Design doc: incident_reports + incident_media (subset of columns
 needed for report submission). Add the remaining columns/FKs (reviewed_by, incident_id...) later."""
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Numeric, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.session import Base
+from app.services.incident_tracking import generate_incident_id, utc_now
 
 
 class ReportStatus:
@@ -16,14 +17,10 @@ class ReportStatus:
     DISMISSED = "DISMISSED"
 
 
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
 class IncidentReport(Base):
     __tablename__ = "incident_reports"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=generate_incident_id)
     # Add the users.id foreign key alongside the project's Alembic migration setup.
     submitted_by: Mapped[uuid.UUID | None] = mapped_column(Uuid, nullable=True)
     disaster_type: Mapped[str] = mapped_column(String(50), nullable=False)
@@ -32,7 +29,7 @@ class IncidentReport(Base):
     longitude: Mapped[float] = mapped_column(Numeric(9, 6, asdecimal=False), nullable=False)
     location_name: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[str] = mapped_column(String(20), default=ReportStatus.SUBMITTED, nullable=False)
-    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     media: Mapped[list["IncidentMedia"]] = relationship(
         back_populates="report", cascade="all, delete-orphan")
@@ -66,10 +63,13 @@ class IncidentMedia(Base):
     storage_path: Mapped[str] = mapped_column(Text, nullable=False)       # relative to UPLOAD_DIR
     media_type: Mapped[str] = mapped_column(String(10), default="IMAGE", nullable=False)
     processing_status: Mapped[str] = mapped_column(String(20), default="PENDING", nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     report: Mapped[IncidentReport] = relationship(back_populates="media")
 
     @property
     def url(self) -> str:
         return f"/reports/{self.report_id}/image"
+
+
+

@@ -1,6 +1,37 @@
 import { useRef, useState } from 'react';
 import { ArrowDownToLine, Check, CloudUpload, FileJson2, FileSpreadsheet, X } from 'lucide-react';
-import { importReports } from '../../api/reports.js';
+import { getReport, importReports } from '../../api/reports.js';
+
+async function attachReportDetails(results) {
+  const detailed = [];
+  const accepted = results.filter((result) => result.status === 'accepted' && result.reportId);
+  for (let index = 0; index < accepted.length; index += 10) {
+    const batch = accepted.slice(index, index + 10);
+    const reports = await Promise.all(batch.map(async (result) => {
+      try { return await getReport(result.reportId); }
+      catch { return null; }
+    }));
+    detailed.push(...batch.map((result, batchIndex) => ({ ...result, report: reports[batchIndex] })));
+  }
+  const byId = new Map(detailed.map((result) => [result.reportId, result.report]));
+  return results.map((result) => ({
+    ...result,
+    report: result.reportId ? byId.get(result.reportId) ?? null : null,
+  }));
+}
+
+function formatExtractedFacts(facts) {
+  if (!facts) return 'No extraction details available';
+  const items = [
+    facts.incident_category,
+    facts.urgency,
+    facts.affected_persons == null ? null : `${facts.affected_persons} affected`,
+    ...(facts.hazards || []),
+    ...(facts.requested_assistance || []),
+    ...(facts.location_mentions || []),
+  ].filter(Boolean);
+  return items.length ? items.join(' · ') : 'No details identified in description';
+}
 
 function downloadSample(kind) {
   const content = kind === 'json'
@@ -37,7 +68,8 @@ export default function ImportPage() {
     setSummary(null);
     try {
       const result = await importReports(kind, await file.text());
-      setSummary(result);
+      const results = await attachReportDetails(result.results);
+      setSummary({ ...result, results });
       setMessage({ kind: result.rejected ? 'warning' : 'success', text: `${result.accepted} accepted · ${result.rejected} rejected · ${result.total} total records` });
     } catch (requestError) {
       setMessage({ kind: 'error', text: requestError.message });
@@ -80,7 +112,23 @@ export default function ImportPage() {
       </div>
 
       {summary && <section className="panel import-results"><div className="panel-heading"><div><div className="section-kicker">IMPORT RESPONSE</div><h2>Record results</h2></div><span className="results-total">{summary.total} records</span></div>
-        <div className="report-table-wrap"><table className="report-table"><thead><tr><th>ROW</th><th>RESULT</th><th>DETAILS</th></tr></thead><tbody>{summary.results.map((result) => <tr key={result.record}><td>#{result.record}</td><td><span className={`result-status result-status--${result.status}`}>{result.status === 'accepted' ? <Check size={14} /> : <X size={14} />}{result.status}</span></td><td>{result.status === 'accepted' ? result.reportId : (result.errors || []).join('; ')}</td></tr>)}</tbody></table></div>
+        <div className="report-table-wrap"><table className="report-table"><thead><tr><th>ROW</th><th>RESULT</th><th>REPORT TRACKING · EPIC 1.4</th><th>EXTRACTED FACTS · EPIC 2.1</th></tr></thead><tbody>{summary.results.map((result) => {
+          const extraction = result.report?.extraction;
+          const facts = extraction?.effective_facts ?? extraction?.extracted_facts;
+          const evidenceItems = Object.entries(extraction?.evidence || {}).flatMap(
+            ([field, phrases]) => phrases.map((text, index) => ({ field, text, index })),
+          );
+          return <tr key={result.record}>
+            <td>#{result.record}</td>
+            <td><span className={`result-status result-status--${result.status}`}>{result.status === 'accepted' ? <Check size={14} /> : <X size={14} />}{result.status}</span></td>
+            <td>{result.status === 'accepted' ? <><strong>ID:</strong> {result.reportId}<br /><strong>Submitted:</strong> {result.report?.submitted_at || 'Saved; timestamp unavailable'}</> : (result.errors || []).join('; ')}</td>
+            <td>{result.status === 'accepted' ? <>
+              <span className="section-kicker">{extraction?.extractor_version || 'EXTRACTION UNAVAILABLE'}</span>
+              <p>{formatExtractedFacts(facts)}</p>
+              {evidenceItems.length > 0 && <details className="extraction-evidence"><summary>Source phrases ({evidenceItems.length})</summary><ul>{evidenceItems.map((item) => <li key={`${item.field}-${item.index}`}><strong>{item.field.replaceAll('_', ' ')}:</strong> “{item.text}”</li>)}</ul></details>}
+            </> : 'Not saved'}</td>
+          </tr>;
+        })}</tbody></table></div>
       </section>}
     </>
   );

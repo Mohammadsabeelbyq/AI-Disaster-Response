@@ -15,6 +15,7 @@ export default function ReportFormPage() {
   const fileRef = useRef(null);
   const [selectedFile, setSelectedFile] = useState(null);
   const [message, setMessage] = useState(null);
+  const [submittedReport, setSubmittedReport] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [location, setLocation] = useState({ latitude: '', longitude: '', location_name: '' });
 
@@ -39,6 +40,7 @@ export default function ReportFormPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     setMessage(null);
+    setSubmittedReport(null);
     if (!location.latitude || !location.longitude) {
       setMessage({ kind: 'error', text: 'Select a location on the map before submitting.' });
       return;
@@ -46,7 +48,8 @@ export default function ReportFormPage() {
     setSubmitting(true);
     try {
       const result = await submitReport(new FormData(formRef.current));
-      setMessage({ kind: 'success', text: `Report received. Reference ${result.id}${result.image ? ' · photo attached' : ''}.` });
+      setSubmittedReport(result);
+      setMessage({ kind: 'success', text: `Report received. Reference ${result.id}${result.image ? ' · photo attached' : ''}. Submitted at ${result.submitted_at}.` });
       formRef.current.reset();
       setSelectedFile(null);
       setLocation({ latitude: '', longitude: '', location_name: '' });
@@ -54,6 +57,21 @@ export default function ReportFormPage() {
       setMessage({ kind: 'error', text: requestError.message });
     } finally { setSubmitting(false); }
   }
+
+  const extraction = submittedReport?.extraction;
+  const extractedFacts = extraction?.effective_facts ?? extraction?.extracted_facts;
+  const evidenceItems = Object.entries(extraction?.evidence || {}).flatMap(
+    ([field, phrases]) => phrases.map((text, index) => ({ field, text, index })),
+  );
+  const extractionFields = [
+    ['Disaster category', extractedFacts?.incident_category],
+    ['Severity cues', extractedFacts?.severity_cues],
+    ['Urgency', extractedFacts?.urgency],
+    ['Affected people', extractedFacts?.affected_persons],
+    ['Hazards', extractedFacts?.hazards],
+    ['Requested assistance', extractedFacts?.requested_assistance],
+    ['Location mentions', extractedFacts?.location_mentions],
+  ];
 
   return (
     <>
@@ -81,6 +99,33 @@ export default function ReportFormPage() {
             )}
           </div>
           {message && <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.kind === 'success' && <Check size={17} />}{message.text}</div>}
+          {submittedReport?.extraction && (
+            <section className="extraction-results" aria-live="polite" aria-label="Extracted incident details">
+              <div className="panel-heading">
+                <div><span className="section-kicker">TEXT ANALYSIS · {submittedReport.extraction.extractor_version}</span><h2>Details identified in your description</h2></div>
+                <span className="result-status result-status--accepted">Text ready</span>
+              </div>
+              {extractedFacts ? (
+                <>
+                  <dl className="extraction-facts">
+                    {extractionFields.map(([label, value]) => (
+                      <div className="extraction-fact" key={label}>
+                        <dt>{label}</dt>
+                        <dd>{Array.isArray(value) ? (value.length ? value.join(', ') : 'Not identified') : (value ?? 'Not identified')}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                  <details className="extraction-evidence">
+                    <summary>View supporting phrases from your description ({evidenceItems.length})</summary>
+                    {evidenceItems.length ? (
+                      <ul>{evidenceItems.map((item) => <li key={`${item.field}-${item.index}`}><strong>{item.field.replaceAll('_', ' ')}:</strong> “{item.text}”</li>)}</ul>
+                    ) : <p>No facts were identified; no values were inferred.</p>}
+                  </details>
+                  <p className="extraction-note">Automated suggestions only—not verified incident facts or an emergency dispatch decision.</p>
+                </>
+              ) : <p className="extraction-note">Text analysis could not be completed. Your report was saved and remains available for review.</p>}
+            </section>
+          )}
           <div className="form-actions"><span>Reports are recorded as <strong>SUBMITTED</strong> for review.</span><button className="button button--primary" type="submit" disabled={submitting}>{submitting ? 'Sending…' : 'Submit report'}<ArrowRight size={16} /></button></div>
         </form>
 

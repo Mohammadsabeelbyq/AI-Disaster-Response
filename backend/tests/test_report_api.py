@@ -1,8 +1,16 @@
 """User Story 1.1 (web form) and 1.2 (text + optional image)."""
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.config import get_settings
 from tests.conftest import GIF, JPEG, PNG, WEBP
+
+
+def _utc_timestamp(value):
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:  # SQLite drops the timezone suffix on persistence.
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _count(client):
