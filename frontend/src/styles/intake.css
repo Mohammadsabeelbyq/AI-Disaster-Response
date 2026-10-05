@@ -191,6 +191,33 @@ button { color: inherit; }
 .source-meta dt { color: var(--color-muted); font-size: 9px; }
 .source-meta dd { overflow-wrap: anywhere; margin: 3px 0 0; color: var(--color-ink); font-size: 10px; font-weight: 600; }
 .source-image-link { display: inline-flex; margin-top: 12px; color: var(--color-brand); font-size: 10px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
+.workflow-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 15px; padding-top: 13px; border-top: 1px solid var(--color-line); }
+.workflow-actions .button, .workflow-dismiss .button { min-height: 34px; font-size: 10px; }
+.workflow-dismiss { display: flex; min-width: min(100%, 300px); flex: 1; gap: 7px; }
+.workflow-dismiss input, .plan-decision-row input { min-width: 0; flex: 1; padding: 7px 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); outline: none; background: var(--color-surface); color: var(--color-ink); font-size: 10px; }
+.workflow-dismiss input:focus, .plan-decision-row input:focus { border-color: var(--color-brand); box-shadow: 0 0 0 2px rgb(23 76 66 / 10%); }
+.incident-confirmed, .incident-dismissed { color: var(--color-success); font-size: 9px; font-weight: 700; }
+.incident-dismissed { color: var(--color-danger); }
+.response-plan-panel { padding: 19px; }
+.response-plan-panel .panel-heading { margin-bottom: 12px; }
+.response-plan-panel .panel-heading h2 { margin: 3px 0 0; font-size: 15px; }
+.plan-status { padding: 5px 8px; border: 1px solid var(--color-line); border-radius: 3px; color: var(--color-muted); font-size: 8px; font-weight: 700; letter-spacing: .07em; }
+.plan-status--awaiting_approval { border-color: #ead7a8; background: var(--color-signal-wash); color: #735317; }
+.plan-status--approved { border-color: #c9dfd1; background: var(--color-brand-wash); color: var(--color-success); }
+.plan-status--rejected { border-color: #efd0c9; background: var(--color-danger-wash); color: var(--color-danger); }
+.plan-explanation, .plan-safety-note, .plan-decision-meta { margin: 0 0 12px; color: var(--color-muted); font-size: 10px; line-height: 1.6; }
+.plan-source-facts, .plan-action-list { display: grid; gap: 5px; margin-top: 10px; color: var(--color-ink-soft); font-size: 10px; }
+.plan-source-facts strong, .plan-action-list > strong { color: var(--color-brand); font-size: 9px; text-transform: uppercase; }
+.plan-source-facts span { line-height: 1.6; }
+.plan-action-list p { margin: 0; padding-left: 12px; position: relative; line-height: 1.5; }
+.plan-action-list p::before { position: absolute; left: 1px; content: "•"; color: var(--color-map); }
+.plan-gap { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px; border-left: 2px solid var(--color-signal); background: var(--color-surface-alt); color: var(--color-ink-soft); font-size: 9px; line-height: 1.55; }
+.plan-gap svg { flex: 0 0 auto; color: #987024; }
+.plan-safety-note { margin: 10px 0 0; color: var(--color-danger); font-weight: 600; }
+.plan-decision-row { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 12px; }
+.plan-decision-row .button { min-height: 34px; font-size: 10px; }
+.plan-regenerate { min-height: 34px; margin-top: 12px; font-size: 10px; }
+.plan-decision-meta { margin-top: 10px; margin-bottom: 0; }
 .confidence-scale { color: var(--color-muted); font-size: 9px; }
 .review-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 13px; }
 .review-fields .field { min-width: 0; }

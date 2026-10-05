@@ -55,6 +55,12 @@ def attach_image(db: Session, report_id: uuid.UUID, image: ValidatedImage) -> In
     try:
         stored_path = media_service.store_image(image)
         report.media.append(_media_row(image, stored_path))
+        if report.extraction is None:
+            report.extraction = extraction_service.create_extraction(report, image)
+        else:
+            status, cues = extraction_service.analyze_image(image.data, image.mime_type)
+            report.extraction.image_analysis_status = status
+            report.extraction.image_cues = cues
         db.commit()
     except (SQLAlchemyError, OSError) as exc:
         db.rollback()

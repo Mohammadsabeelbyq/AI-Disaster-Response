@@ -22,7 +22,10 @@ def test_text_only_report_accepted(client, valid_form):
     assert "incident_category" in extraction["confidence"]
     assert extraction["evidence"]["incident_category"]
     assert extraction["image_analysis_status"] == "NOT_PROVIDED"
-    assert client.get(f"/reports/{body['id']}").json()["description"] == valid_form["description"]
+    persisted = client.get(f"/reports/{body['id']}").json()
+    assert persisted["id"] == body["id"]
+    assert persisted["submitted_at"] == body["submitted_at"]
+    assert persisted["description"] == valid_form["description"]
 
 
 def test_text_extraction_leaves_unsupported_facts_unknown(client, valid_form):
@@ -36,6 +39,46 @@ def test_text_extraction_leaves_unsupported_facts_unknown(client, valid_form):
     assert "severity_cues" not in body["extraction"]["confidence"]
 
 
+def test_extraction_evidence_and_confidence_are_bounded_and_traceable(client, valid_form):
+    valid_form["description"] = (
+        "Flood water is rising near Edappally. 5 people are trapped and need rescue "
+        "and clean water immediately."
+    )
+    valid_form["location_name"] = ""
+    body = client.post("/reports", data=valid_form).json()
+    extraction = body["extraction"]
+    facts = extraction["extracted_facts"]
+    confidence = extraction["confidence"]
+    evidence = extraction["evidence"]
+    source = body["description"].lower()
+
+    assert facts["incident_category"] == "FLOOD"
+    assert facts["urgency"] == "CRITICAL"
+    assert facts["affected_persons"] == 5
+    assert "Edappally" in facts["location_mentions"]
+    assert set(confidence) == set(evidence)
+    assert all(0 <= score <= 1 for score in confidence.values())
+    for field, evidence_items in evidence.items():
+        assert evidence_items
+        assert all(item.lower() in source for item in evidence_items)
+        assert facts[field] not in (None, [], 0)
+
+
+def test_unknown_extraction_fields_have_no_confidence_or_evidence(client, valid_form):
+    valid_form["description"] = "A report was submitted."
+    valid_form["location_name"] = ""
+    extraction = client.post("/reports", data=valid_form).json()["extraction"]
+    facts = extraction["extracted_facts"]
+
+    assert facts["urgency"] is None
+    assert facts["affected_persons"] is None
+    assert facts["hazards"] == []
+    assert facts["requested_assistance"] == []
+    for field in ("urgency", "affected_persons", "hazards", "requested_assistance"):
+        assert field not in extraction["confidence"]
+        assert field not in extraction["evidence"]
+
+
 def test_coordinator_correction_preserves_source_and_extraction_history(client, valid_form):
     original = client.post("/reports", data=valid_form).json()
     client.post("/auth/logout")
@@ -43,6 +86,10 @@ def test_coordinator_correction_preserves_source_and_extraction_history(client, 
         "email": "coordinator@example.test", "password": "test-coordinator-password-123",
         "role": "MANAGEMENT",
     }).status_code == 200
+    review_source = client.get(f"/reports/{original['id']}").json()
+    assert review_source["description"] == original["description"]
+    assert review_source["extraction"]["extracted_facts"] == original["extraction"]["extracted_facts"]
+    assert review_source["extraction"]["evidence"] == original["extraction"]["evidence"]
     facts = {**original["extraction"]["extracted_facts"], "urgency": "CRITICAL"}
     response = client.patch(f"/reports/{original['id']}/extraction", json={"facts": facts})
     assert response.status_code == 200
@@ -52,8 +99,15 @@ def test_coordinator_correction_preserves_source_and_extraction_history(client, 
     assert updated["extraction"]["corrected_facts"]["urgency"] == "CRITICAL"
     assert updated["extraction"]["effective_facts"]["urgency"] == "CRITICAL"
     assert updated["extraction"]["reviews"][0]["corrected_facts"]["urgency"] == "CRITICAL"
+    assert updated["extraction"]["reviews"][0]["actor_id"] == updated["extraction"]["reviewed_by"]
+    assert updated["extraction"]["reviews"][0]["previous_facts"] == original["extraction"]["extracted_facts"]
     assert updated["extraction"]["reviewed_by"]
     assert updated["extraction"]["reviewed_at"].endswith("+00:00") or updated["extraction"]["reviewed_at"].endswith("Z")
+    persisted = client.get(f"/reports/{original['id']}").json()
+    assert persisted["description"] == original["description"]
+    assert persisted["extraction"]["extracted_facts"] == original["extraction"]["extracted_facts"]
+    assert persisted["extraction"]["effective_facts"]["urgency"] == "CRITICAL"
+    assert len(persisted["extraction"]["reviews"]) == 1
 
 
 def test_reporter_cannot_correct_extraction(client, valid_form):
@@ -105,6 +159,31 @@ def test_optional_image_analysis_returns_advisory_cue(monkeypatch):
     assert captured["headers"]["x-goog-api-key"] == "test-key"
 
 
+def test_image_analysis_discards_cues_with_invalid_confidence(monkeypatch):
+    from types import SimpleNamespace
+    from app.services import extraction_service
+
+    monkeypatch.setattr(extraction_service, "get_settings", lambda: SimpleNamespace(
+        enable_image_analysis=True, gemini_api_key="test-key", gemini_model="test-model"))
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"candidates": [{"content": {"parts": [{"text":
+                '{"cues":['
+                '{"cue":"valid","confidence":0.6,"evidence":"visible water"},'
+                '{"cue":"too high","confidence":1.2,"evidence":"invalid score"},'
+                '{"cue":"negative","confidence":-0.1,"evidence":"invalid score"}'
+                ']}'}]}}]}
+
+    monkeypatch.setattr(extraction_service.httpx, "post", lambda *_args, **_kwargs: Response())
+    status, cues = extraction_service.analyze_image(PNG, "image/png")
+    assert status == "COMPLETED"
+    assert cues == [{"cue": "valid", "confidence": 0.6, "evidence": "visible water"}]
+
+
 def test_failed_optional_image_analysis_does_not_reject_report(client, valid_form, monkeypatch):
     from app.services import extraction_service
 
@@ -113,6 +192,25 @@ def test_failed_optional_image_analysis_does_not_reject_report(client, valid_for
                            files={"image": ("evidence.png", PNG, "image/png")})
     assert response.status_code == 201
     assert response.json()["extraction"]["image_analysis_status"] == "FAILED"
+
+
+def test_image_cue_analysis_is_saved_with_the_report_and_evidence(client, valid_form, monkeypatch):
+    from app.services import extraction_service
+
+    cue = {"cue": "standing water", "confidence": 0.91,
+           "evidence": "water covers the street"}
+    monkeypatch.setattr(extraction_service, "analyze_image", lambda *_: ("COMPLETED", [cue]))
+    response = client.post(
+        "/reports", data=valid_form,
+        files={"image": ("flood.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 201
+    report_id = response.json()["id"]
+    persisted = client.get(f"/reports/{report_id}").json()
+    assert persisted["image"]["id"] == response.json()["image"]["id"]
+    assert persisted["extraction"]["image_analysis_status"] == "COMPLETED"
+    assert persisted["extraction"]["image_cues"] == [cue]
 
 
 def test_missing_image_part_is_fine(client, valid_form):
@@ -181,6 +279,58 @@ def test_attach_image_later_and_only_once(client, valid_form):
     assert r.status_code == 201 and r.json()["image"]["mime_type"] == "image/jpeg"
     r = client.post(f"/reports/{rid}/media", files={"image": ("b.jpg", JPEG, "image/jpeg")})
     assert r.status_code == 409
+
+
+def test_attached_later_image_is_analyzed_and_saved_as_advisory(client, valid_form, monkeypatch):
+    from app.services import extraction_service
+
+    report = client.post("/reports", data=valid_form).json()
+    analyzed = []
+
+    def analyze(data, mime_type):
+        analyzed.append((data, mime_type))
+        return "COMPLETED", [{
+            "cue": "standing water",
+            "confidence": 0.91,
+            "evidence": "water covers the street",
+        }]
+
+    monkeypatch.setattr(extraction_service, "analyze_image", analyze)
+    response = client.post(
+        f"/reports/{report['id']}/media",
+        files={"image": ("evidence.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert analyzed == [(PNG, "image/png")]
+    assert body["description"] == valid_form["description"]
+    assert body["image"]["id"]
+    assert body["extraction"]["image_analysis_status"] == "COMPLETED"
+    assert body["extraction"]["image_cues"] == [{
+        "cue": "standing water",
+        "confidence": 0.91,
+        "evidence": "water covers the street",
+    }]
+
+
+def test_failed_analysis_of_later_image_keeps_report_and_image(client, valid_form, monkeypatch):
+    from app.services import extraction_service
+
+    report = client.post("/reports", data=valid_form).json()
+    monkeypatch.setattr(extraction_service, "analyze_image", lambda *_: ("FAILED", None))
+    response = client.post(
+        f"/reports/{report['id']}/media",
+        files={"image": ("evidence.png", PNG, "image/png")},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["id"] == report["id"]
+    assert body["description"] == report["description"]
+    assert body["image"]["id"]
+    assert body["extraction"]["image_analysis_status"] == "FAILED"
+    assert body["extraction"]["image_cues"] is None
 
 
 def test_unknown_report_404(client):

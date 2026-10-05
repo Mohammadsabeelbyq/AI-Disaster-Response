@@ -102,6 +102,51 @@ class ExtractionCorrection(BaseModel):
     facts: ExtractedFacts
 
 
+class IncidentSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    status: str
+
+
+class ResponsePlanOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    incident_id: uuid.UUID
+    version: int
+    status: str
+    source_facts: ExtractedFacts
+    recommended_actions: list[str]
+    resource_candidates: list[dict]
+    gaps: list[str]
+    human_approval_required: bool
+    generated_by: uuid.UUID
+    created_at: datetime
+    decided_by: uuid.UUID | None
+    decided_at: datetime | None
+    decision_reason: str | None
+
+
+class IncidentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    report_id: uuid.UUID
+    status: str
+    confirmed_by: uuid.UUID
+    confirmed_at: datetime
+    plans: list[ResponsePlanOut]
+
+
+class PlanDecision(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class ReportDismissal(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
 class ReportOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
@@ -114,6 +159,7 @@ class ReportOut(BaseModel):
     submitted_at: datetime
     image: MediaOut | None = None
     extraction: ExtractionOut | None = None
+    incident: IncidentSummaryOut | None = None
 
     @field_validator("submitted_at", mode="before")
     @classmethod

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from app.api import auth, reports
+from app.api import auth, reports, workflow
 from app.database import SessionLocal, init_db
 from app.services.auth_service import seed_demo_accounts
 from app.services.errors import AppError
@@ -34,6 +34,9 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="AI Disaster Response - Core Engine", lifespan=lifespan)
 app.include_router(auth.router)
 app.include_router(reports.router)
+app.include_router(workflow.reports_router)
+app.include_router(workflow.incidents_router)
+app.include_router(workflow.plans_router)
 if (FRONTEND_DIST_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_DIR / "assets"), name="frontend-assets")
 

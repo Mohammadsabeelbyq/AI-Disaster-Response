@@ -34,6 +34,27 @@ def test_json_multiple_valid_records_are_distinct_reports(client):
     assert {x["id"] for x in stored(client)} == ids
 
 
+def test_imported_reports_persist_source_extraction_ids_and_timestamps(client):
+    records = [
+        rec(disaster_type="FLOOD", description="Flood water rising near Edappally"),
+        rec(disaster_type="FIRE", description="Smoke seen near the station"),
+    ]
+    body = post_json(client, records).json()
+    report_ids = [item["reportId"] for item in body["results"]]
+    assert len(set(report_ids)) == len(records)
+
+    persisted = {report["id"]: report for report in stored(client)}
+    for source, report_id in zip(records, report_ids):
+        report = persisted[report_id]
+        fetched = client.get(f"/reports/{report_id}").json()
+        assert report["description"] == source["description"]
+        assert report["submitted_at"]
+        assert fetched["id"] == report_id
+        assert fetched["submitted_at"] == report["submitted_at"]
+        assert report["extraction"]["extracted_facts"]
+        assert report["extraction"]["effective_facts"] == report["extraction"]["extracted_facts"]
+
+
 def test_json_mixed_validity(client):
     r = post_json(client, [rec(), rec(description=""), rec(disaster_type="FLOOD")])
     body = r.json()

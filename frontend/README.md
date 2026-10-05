@@ -1,6 +1,6 @@
 # Frontend workspace
 
-React + Vite client for the two incident-report intake stories: web submission and structured JSON/CSV import. The frontend consumes the existing FastAPI contracts and intentionally does not implement dashboard, review, map, or response-coordination workflows.
+React + Vite client for incident intake and the first coordinator review/planning slice. It consumes FastAPI contracts and does not implement public/operational maps, resource registries, or actual dispatch.
 
 ## Run locally
 
@@ -17,6 +17,12 @@ npm install
 npm run dev
 ```
 
+Run the frontend location parser tests with:
+
+```powershell
+npm test
+```
+
 Open the local URL Vite prints. Vite proxies `/auth`, `/reports`, and `/health` to `http://127.0.0.1:8000`. Set `VITE_API_BASE_URL` only when the API is hosted elsewhere.
 
 To serve the production bundle from FastAPI, run `npm run build` and restart the backend. The client is served at `/`; `/report-form` remains as a compatibility URL. The legacy `incident_report.html` is retained as a fallback when no production bundle exists.
@@ -29,8 +35,10 @@ To serve the production bundle from FastAPI, run `npm run build` and restart the
 - Web form (`/` or `/intake`) submits multipart data to `POST /reports`, including optional JPEG, PNG, or WebP evidence.
 - The form's Leaflet/OpenStreetMap location picker supports address search and reverse geocoding through public Nominatim, map clicks, draggable markers, coordinate/full Google Maps URL input, and browser geolocation. Coordinates and place name are map-populated form outputs.
 - Bulk import uses `POST /reports/import/json` or `/reports/import/csv` and displays each accepted/rejected row.
+- The coordinator Review workspace can move a report through review, confirm or dismiss it, inspect/correct extracted facts, generate a needs-based response-plan draft, and record an approve/reject decision.
+- Response plans use corrected/effective facts, require human approval, and explicitly show that no responder assignment or dispatch occurs because verified departments/resources are not yet registered.
 - `/report-form` remains an alias for the web form.
-- Dashboard, report history, public/operational maps, and role-specific incident coordination/admin workspaces are outside this frontend task. Add server-side role checks when those API modules are implemented.
+- Dashboard, report history, public/operational maps, department/resource management, and actual incident operations/dispatch are not implemented in this frontend slice.
 
 ## Ownership and naming
 

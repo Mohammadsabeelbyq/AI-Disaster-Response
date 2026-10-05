@@ -1,11 +1,13 @@
 # AI Disaster Response – Core Engine
 
-## Incident Reporting and Understanding (Epics 1 and 2)
+## Incident Reporting, Understanding, and Coordinator Workflow
 
 Users can submit incidents through a web form or bulk-import JSON / CSV, with optional photo evidence.
 Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`) with a unique UUID and UTC submission timestamp. A separate `report_extractions` row stores evidence-linked, confidence-scored text facts. Original source fields are never overwritten by extraction or coordinator corrections.
 
 Epic 1 stories 1.1–1.5 and Epic 2 stories 2.1–2.5 are implemented. Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory and opt-in; without configuration the report is still accepted and its extraction reports `DISABLED`.
+
+The coordinator workflow supports report review, confirmation or dismissal, and generation of a deterministic response-plan draft from the extraction's `effective_facts`. Plans require a human approve/reject decision. There is currently no department/resource registry, so plans identify response needs and explicitly record that no responders are assigned; approval does not dispatch services.
 
 **Run it** (from `backend/`):
 ```bash
@@ -35,6 +37,8 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | Validation rules / disaster types / image types | `backend/app/schemas/report.py`, `backend/app/config.py` |
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
 | Extraction and review history | `backend/app/models/extraction.py` |
+| Confirmed incidents, response plans, workflow audit | `backend/app/models/incident.py` |
+| Review transitions and deterministic draft planning | `backend/app/services/incident_service.py`, `backend/app/api/workflow.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
 | Session authentication and current user | `backend/app/api/auth.py`, `backend/app/api/deps.py` |
@@ -49,6 +53,14 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | POST | `/reports/import/json` | Bulk import, JSON body |
 | POST | `/reports/import/csv` | Bulk import, CSV body (`Content-Type: text/csv`) |
 | POST | `/reports/{id}/media` | Attach an image to an existing report |
+| POST | `/reports/{id}/review` | Move a submitted report to `UNDER_REVIEW` (MANAGEMENT/ADMIN) |
+| POST | `/reports/{id}/confirm` | Confirm an under-review report and create an incident |
+| POST | `/reports/{id}/dismiss` | Dismiss an under-review report with an optional reason |
+| GET | `/incidents`, `/incidents/{id}` | List confirmed incidents and their plan history |
+| POST | `/incidents/{id}/plans` | Generate a needs-based plan draft from corrected/effective facts |
+| GET | `/response-plans/{id}` | Read a response-plan draft and decision |
+| POST | `/response-plans/{id}/approve` | Record human approval; does not execute dispatch |
+| POST | `/response-plans/{id}/reject` | Record human rejection |
 | GET | `/reports`, `/reports/{id}`, `/reports/{id}/image` | Read; USER is limited to owned reports |
 
 **Report fields** (from the Master Plan §7.1): `disaster_type` (FLOOD, FIRE, EARTHQUAKE, LANDSLIDE, CYCLONE,
@@ -119,8 +131,11 @@ service.rebuild(report_service.list_reports(db, limit=10000))   # full rebuild
 Hook it up wherever you like (e.g. after `create_report`); the submission code does not import it.
 Note: the design docs list *pgvector* for similarity – FAISS was requested, so it is kept isolated and easy to swap.
 
+### Incident and response-plan workflow
+Coordinator/admin flow: `SUBMITTED` → `UNDER_REVIEW` → `ACCEPTED` + confirmed incident (or `DISMISSED`) → generate `AWAITING_APPROVAL` plan → approve/reject. Plan generation snapshots `extraction.effective_facts`, emits deterministic review actions, and never invents department/resource IDs. Because there is no verified department/resource registry yet, candidate assignments remain empty and the plan reports the gap. Approval records actor, time, and reason only; it does not dispatch responders.
+
 ### Notes for teammates
-- **Auth/RBAC:** Report and import endpoints require a signed session. `USER` accounts can view their own reports; `MANAGEMENT` and `ADMIN` can view all submitted reports. Add role checks to operational endpoints as those modules are implemented.
+- **Auth/RBAC:** Report and import endpoints require a signed session. `USER` accounts can view their own reports; `MANAGEMENT` and `ADMIN` can view all submitted reports. Incident review and plan-decision endpoints are coordinator/admin-only.
 - **Local demo accounts:** Configure `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` in the ignored `backend/.env`. Never commit that file or reuse demo passwords in production. Set `AUTH_COOKIE_SECURE=true` behind HTTPS.
 - **Schema:** tables are created by `init_db()` for dev; move to Alembic and add the `submitted_by` foreign key to `users.id`.
-- **Not done here (other owners):** incident creation from a report, priority, PostGIS, review workflow, video upload, `/reports/my`.
+- **Not done here (other owners):** department/resource registry and matching, priority scoring, PostGIS, plan execution/dispatch, video upload, `/reports/my`, and downstream operational workflows that consume approved plans.

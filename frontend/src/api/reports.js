@@ -23,3 +23,43 @@ export function correctExtraction(reportId, facts) {
     body: JSON.stringify({ facts }),
   });
 }
+
+export function startReportReview(reportId) {
+  return request(`/reports/${reportId}/review`, { method: 'POST' });
+}
+
+export function confirmReport(reportId) {
+  return request(`/reports/${reportId}/confirm`, { method: 'POST' });
+}
+
+export function dismissReport(reportId, reason) {
+  return request(`/reports/${reportId}/dismiss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function getIncident(incidentId) {
+  return request(`/incidents/${incidentId}`);
+}
+
+export function generateResponsePlan(incidentId) {
+  return request(`/incidents/${incidentId}/plans`, { method: 'POST' });
+}
+
+export function approveResponsePlan(planId, reason) {
+  return request(`/response-plans/${planId}/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function rejectResponsePlan(planId, reason) {
+  return request(`/response-plans/${planId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
