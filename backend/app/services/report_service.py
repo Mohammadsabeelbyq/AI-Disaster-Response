@@ -60,9 +60,8 @@ def attach_image(db: Session, report_id: uuid.UUID, image: ValidatedImage) -> In
         if report.extraction is None:
             report.extraction = extraction_service.create_extraction(report, image)
         else:
-            status, cues = extraction_service.analyze_image(image.data, image.mime_type)
-            report.extraction.image_analysis_status = status
-            report.extraction.image_cues = cues
+            extraction_service.apply_image_classification(
+                report.extraction, image.data, image.mime_type)
         db.commit()
     except (SQLAlchemyError, OSError) as exc:
         db.rollback()

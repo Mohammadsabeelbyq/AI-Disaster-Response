@@ -1,19 +1,23 @@
-"""Rule-based report extraction plus optional advisory image analysis."""
-import base64
+"""Rule-based report extraction plus local image classification."""
+from functools import lru_cache
+from io import BytesIO
 import json
 import logging
 import re
 from datetime import datetime, timezone
-from urllib.parse import quote
+from pathlib import Path
 
-import httpx
-
-from app.config import get_settings
 from app.models.extraction import ExtractionReview, ReportExtraction
 from app.schemas.report import ExtractedFacts
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "rules-v1"
+EXTRACTOR_VERSION = "rules-v2-resnet50"
+_MODEL_PATH = Path(__file__).resolve().parents[3] / "weights" / "model.weights.h5"
+_MODEL_CONFIG_PATH = _MODEL_PATH.with_name("config.json")
+_CLASS_LABELS = (
+    "Damaged_Infrastructure", "Fire_Disaster", "Human_Damage",
+    "Land_Disaster", "Non_Damage", "Water_Disaster",
+)
 
 _CATEGORIES = {
     "FLOOD": ("flood", "flooding", "inundat"),
@@ -96,85 +100,88 @@ def extract_text(description: str, disaster_type: str, location_name: str | None
         requested_assistance=[name for name, evidence in assistance_evidence.items() if evidence],
         location_mentions=location_mentions,
     ).model_dump()
-    confidence = {}
     evidence = {}
     if category_evidence:
-        confidence["incident_category"] = 0.95 if category_evidence[0].startswith("Submitted") else 0.9
         evidence["incident_category"] = category_evidence
     if severity_evidence:
-        confidence["severity_cues"] = 0.85
         evidence["severity_cues"] = severity_evidence
     if urgency is not None:
-        confidence["urgency"] = 0.85
         evidence["urgency"] = urgency_evidence
     if people_match:
-        confidence["affected_persons"] = 0.95
         evidence["affected_persons"] = affected_evidence
     for field, values in (("hazards", hazard_evidence), ("requested_assistance", assistance_evidence)):
         matched = [phrase for phrases in values.values() for phrase in phrases]
         if matched:
-            confidence[field] = 0.85
             evidence[field] = list(dict.fromkeys(matched))
     if location_mentions:
-        confidence["location_mentions"] = 0.9 if location_name else 0.7
         evidence["location_mentions"] = [location_name] if location_name else location_mentions
-    return facts, confidence, evidence
+    return facts, {}, evidence
+
+
+@lru_cache(maxsize=1)
+def _load_classifier():
+    from tensorflow import keras
+    from tensorflow.keras.applications.resnet50 import preprocess_input
+
+    config = json.loads(_MODEL_CONFIG_PATH.read_text(encoding="utf-8"))
+    model = keras.models.model_from_json(
+        json.dumps(config), custom_objects={"preprocess_input": preprocess_input})
+    model.load_weights(_MODEL_PATH)
+    return model
 
 
 def analyze_image(data: bytes, mime_type: str) -> tuple[str, list[dict] | None]:
-    settings = get_settings()
-    if not settings.enable_image_analysis:
-        return "DISABLED", None
-    if not settings.gemini_api_key:
-        return "NOT_CONFIGURED", None
-    url = ("https://generativelanguage.googleapis.com/v1beta/models/"
-           f"{quote(settings.gemini_model, safe='')}:generateContent")
-    schema = {
-        "type": "OBJECT",
-        "properties": {"cues": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "cue": {"type": "STRING"}, "confidence": {"type": "NUMBER"},
-            "evidence": {"type": "STRING"}}, "required": ["cue", "confidence", "evidence"]}}},
-        "required": ["cues"],
-    }
+    """Run the bundled six-class classifier on an uploaded image."""
     try:
-        response = httpx.post(
-            url,
-            headers={"x-goog-api-key": settings.gemini_api_key},
-            json={
-                "contents": [{"parts": [
-                    {"text": "Return only visible disaster-related cues as advisory labels. Do not infer facts that are not visible. Confidence must be between 0 and 1. An empty cues list is valid."},
-                    {"inline_data": {"mime_type": mime_type,
-                                     "data": base64.b64encode(data).decode("ascii")}},
-                ]}],
-                "generationConfig": {"responseMimeType": "application/json", "responseSchema": schema},
-            },
-            timeout=15,
-        )
-        response.raise_for_status()
-        payload = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        cues = json.loads(payload).get("cues", [])
-        valid_cues = [cue for cue in cues if isinstance(cue, dict)
-                      and isinstance(cue.get("cue"), str)
-                      and isinstance(cue.get("confidence"), (int, float))
-                      and 0 <= cue["confidence"] <= 1]
-        return "COMPLETED", valid_cues
-    except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError):
-        log.exception("Optional image analysis failed")
+        import numpy as np
+        from PIL import Image
+
+        with Image.open(BytesIO(data)) as source:
+            image = source.convert("RGB").resize((224, 224))
+        batch = np.asarray(image, dtype=np.float32)[None, ...]
+        scores = _load_classifier().predict(batch, verbose=0)[0]
+        if len(scores) != len(_CLASS_LABELS):
+            raise ValueError("Classifier output does not match the configured class labels.")
+        prediction = int(np.argmax(scores))
+        cue = {
+            "cue": _CLASS_LABELS[prediction],
+            "confidence": float(scores[prediction]),
+            "evidence": "Predicted by the local image classifier",
+        }
+        return "COMPLETED", [cue]
+    except Exception:
+        log.exception("Local image classification failed")
         return "FAILED", None
+
+
+def apply_image_classification(extraction: ReportExtraction, data: bytes, mime_type: str) -> None:
+    status, cues = analyze_image(data, mime_type)
+    extraction.image_analysis_status = status
+    extraction.image_cues = cues
+    if cues:
+        label = cues[0]["cue"]
+        confidence = float(cues[0].get("confidence", 0.0))
+        context_text = f"Attached image suggests {label} (confidence {confidence:.2f})."
+        extraction.evidence = {
+            **extraction.evidence,
+            "image_context": [context_text],
+        }
 
 
 def create_extraction(report, image=None) -> ReportExtraction:
     facts, confidence, evidence = extract_text(
         report.description, report.disaster_type, report.location_name)
-    image_status, image_cues = analyze_image(image.data, image.mime_type) if image else ("NOT_PROVIDED", None)
-    return ReportExtraction(
+    extraction = ReportExtraction(
         extractor_version=EXTRACTOR_VERSION,
         extracted_facts=facts,
         confidence=confidence,
         evidence=evidence,
-        image_analysis_status=image_status,
-        image_cues=image_cues,
+        image_analysis_status="NOT_PROVIDED",
+        image_cues=None,
     )
+    if image:
+        apply_image_classification(extraction, image.data, image.mime_type)
+    return extraction
 
 
 def correct_extraction(extraction: ReportExtraction, actor_id, facts: dict) -> None:

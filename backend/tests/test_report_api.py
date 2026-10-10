@@ -27,7 +27,7 @@ def test_text_only_report_accepted(client, valid_form):
     extraction = body["extraction"]
     assert extraction["extracted_facts"]["incident_category"] == "FLOOD"
     assert extraction["effective_facts"] == extraction["extracted_facts"]
-    assert "incident_category" in extraction["confidence"]
+    assert extraction["confidence"] == {}
     assert extraction["evidence"]["incident_category"]
     assert extraction["image_analysis_status"] == "NOT_PROVIDED"
     persisted = client.get(f"/reports/{body['id']}").json()
@@ -64,8 +64,7 @@ def test_extraction_evidence_and_confidence_are_bounded_and_traceable(client, va
     assert facts["urgency"] == "CRITICAL"
     assert facts["affected_persons"] == 5
     assert "Edappally" in facts["location_mentions"]
-    assert set(confidence) == set(evidence)
-    assert all(0 <= score <= 1 for score in confidence.values())
+    assert confidence == {}
     for field, evidence_items in evidence.items():
         assert evidence_items
         assert all(item.lower() in source for item in evidence_items)
@@ -139,60 +138,24 @@ def test_existing_report_gets_extraction_backfilled(client, valid_form):
     assert client.get(f"/reports/{report_id}").json()["extraction"]["effective_facts"]
 
 
-def test_optional_image_analysis_returns_advisory_cue(monkeypatch):
-    from types import SimpleNamespace
-    from app.services import extraction_service
+def test_bundled_image_classifier_predicts_from_image_bytes():
+    from io import BytesIO
+    from PIL import Image
+    from app.services.extraction_service import analyze_image
 
-    monkeypatch.setattr(extraction_service, "get_settings", lambda: SimpleNamespace(
-        enable_image_analysis=True, gemini_api_key="test-key", gemini_model="test-model"))
-    captured = {}
+    stream = BytesIO()
+    Image.new("RGB", (224, 224), "white").save(stream, format="PNG")
+    status, cues = analyze_image(stream.getvalue(), "image/png")
 
-    class Response:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"candidates": [{"content": {"parts": [{"text":
-                '{"cues":[{"cue":"standing water","confidence":0.91,"evidence":"water covers the street"}]}'}]}}]}
-
-    def fake_post(url, **kwargs):
-        captured.update(url=url, **kwargs)
-        return Response()
-
-    monkeypatch.setattr(extraction_service.httpx, "post", fake_post)
-    status, cues = extraction_service.analyze_image(b"image-bytes", "image/png")
     assert status == "COMPLETED"
-    assert cues == [{"cue": "standing water", "confidence": 0.91,
-                     "evidence": "water covers the street"}]
-    assert captured["headers"]["x-goog-api-key"] == "test-key"
+    assert cues[0]["cue"] in {
+        "Damaged_Infrastructure", "Fire_Disaster", "Human_Damage",
+        "Land_Disaster", "Non_Damage", "Water_Disaster",
+    }
+    assert 0 <= cues[0]["confidence"] <= 1
 
 
-def test_image_analysis_discards_cues_with_invalid_confidence(monkeypatch):
-    from types import SimpleNamespace
-    from app.services import extraction_service
-
-    monkeypatch.setattr(extraction_service, "get_settings", lambda: SimpleNamespace(
-        enable_image_analysis=True, gemini_api_key="test-key", gemini_model="test-model"))
-
-    class Response:
-        def raise_for_status(self):
-            pass
-
-        def json(self):
-            return {"candidates": [{"content": {"parts": [{"text":
-                '{"cues":['
-                '{"cue":"valid","confidence":0.6,"evidence":"visible water"},'
-                '{"cue":"too high","confidence":1.2,"evidence":"invalid score"},'
-                '{"cue":"negative","confidence":-0.1,"evidence":"invalid score"}'
-                ']}'}]}}]}
-
-    monkeypatch.setattr(extraction_service.httpx, "post", lambda *_args, **_kwargs: Response())
-    status, cues = extraction_service.analyze_image(PNG, "image/png")
-    assert status == "COMPLETED"
-    assert cues == [{"cue": "valid", "confidence": 0.6, "evidence": "visible water"}]
-
-
-def test_failed_optional_image_analysis_does_not_reject_report(client, valid_form, monkeypatch):
+def test_failed_image_classification_does_not_reject_report(client, valid_form, monkeypatch):
     from app.services import extraction_service
 
     monkeypatch.setattr(extraction_service, "analyze_image", lambda *_: ("FAILED", None))
@@ -202,11 +165,12 @@ def test_failed_optional_image_analysis_does_not_reject_report(client, valid_for
     assert response.json()["extraction"]["image_analysis_status"] == "FAILED"
 
 
-def test_image_cue_analysis_is_saved_with_the_report_and_evidence(client, valid_form, monkeypatch):
+def test_image_prediction_is_advisory_context_not_authoritative(client, valid_form, monkeypatch):
     from app.services import extraction_service
 
-    cue = {"cue": "standing water", "confidence": 0.91,
-           "evidence": "water covers the street"}
+    valid_form["disaster_type"] = "FIRE"
+    cue = {"cue": "Water_Disaster", "confidence": 0.91,
+           "evidence": "Predicted by the local image classifier"}
     monkeypatch.setattr(extraction_service, "analyze_image", lambda *_: ("COMPLETED", [cue]))
     response = client.post(
         "/reports", data=valid_form,
@@ -219,6 +183,10 @@ def test_image_cue_analysis_is_saved_with_the_report_and_evidence(client, valid_
     assert persisted["image"]["id"] == response.json()["image"]["id"]
     assert persisted["extraction"]["image_analysis_status"] == "COMPLETED"
     assert persisted["extraction"]["image_cues"] == [cue]
+    assert persisted["extraction"]["extracted_facts"]["incident_category"] == "FIRE"
+    assert persisted["extraction"]["evidence"]["incident_category"] == ["Submitted incident category: FIRE"]
+    assert "image_context" in persisted["extraction"]["evidence"]
+    assert "Water_Disaster" in persisted["extraction"]["evidence"]["image_context"][0]
 
 
 def test_missing_image_part_is_fine(client, valid_form):
@@ -289,7 +257,7 @@ def test_attach_image_later_and_only_once(client, valid_form):
     assert r.status_code == 409
 
 
-def test_attached_later_image_is_analyzed_and_saved_as_advisory(client, valid_form, monkeypatch):
+def test_later_image_adds_advisory_context_without_overriding_category(client, valid_form, monkeypatch):
     from app.services import extraction_service
 
     report = client.post("/reports", data=valid_form).json()
@@ -298,9 +266,9 @@ def test_attached_later_image_is_analyzed_and_saved_as_advisory(client, valid_fo
     def analyze(data, mime_type):
         analyzed.append((data, mime_type))
         return "COMPLETED", [{
-            "cue": "standing water",
+            "cue": "Water_Disaster",
             "confidence": 0.91,
-            "evidence": "water covers the street",
+            "evidence": "Predicted by the local image classifier",
         }]
 
     monkeypatch.setattr(extraction_service, "analyze_image", analyze)
@@ -316,10 +284,14 @@ def test_attached_later_image_is_analyzed_and_saved_as_advisory(client, valid_fo
     assert body["image"]["id"]
     assert body["extraction"]["image_analysis_status"] == "COMPLETED"
     assert body["extraction"]["image_cues"] == [{
-        "cue": "standing water",
+        "cue": "Water_Disaster",
         "confidence": 0.91,
-        "evidence": "water covers the street",
+        "evidence": "Predicted by the local image classifier",
     }]
+    assert body["extraction"]["extracted_facts"]["incident_category"] == "FLOOD"
+    assert "image_context" in body["extraction"]["evidence"]
+    assert "Water_Disaster" in body["extraction"]["evidence"]["image_context"][0]
+    assert "incident_category" not in body["extraction"]["confidence"]
 
 
 def test_failed_analysis_of_later_image_keeps_report_and_image(client, valid_form, monkeypatch):
