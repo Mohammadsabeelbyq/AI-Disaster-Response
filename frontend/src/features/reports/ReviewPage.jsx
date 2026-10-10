@@ -7,6 +7,7 @@ import {
   dismissReport,
   generateResponsePlan,
   getIncident,
+  overrideIncidentPriority,
   listReports,
   rejectResponsePlan,
   startReportReview,
@@ -51,6 +52,8 @@ export default function ReviewPage() {
   const [incident, setIncident] = useState(null);
   const [plan, setPlan] = useState(null);
   const [decisionReason, setDecisionReason] = useState('');
+  const [priorityReason, setPriorityReason] = useState('');
+  const [priorityBand, setPriorityBand] = useState('HIGH');
   const selected = reports.find((report) => report.id === selectedId) || null;
   const factRows = (selected?.extraction ? [
     'incident_category', 'urgency', 'affected_persons', 'severity_cues', 'hazards', 'requested_assistance', 'location_mentions',
@@ -173,6 +176,28 @@ export default function ReviewPage() {
     }
   }
 
+  async function applyPriorityOverride() {
+    if (!incident) return;
+    const trimmedReason = priorityReason.trim();
+    if (!trimmedReason) {
+      setMessage({ kind: 'error', text: 'Provide a reason before overriding the priority classification.' });
+      return;
+    }
+
+    try {
+      const updated = await overrideIncidentPriority(incident.id, {
+        reason: trimmedReason,
+        score: incident.priority_score ?? 0,
+        band: priorityBand,
+      });
+      setIncident(updated);
+      setPriorityReason('');
+      setMessage({ kind: 'success', text: 'Priority override recorded and tied to the coordinator rationale.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    }
+  }
+
   return (
     <>
       <section className="page-heading review-heading">
@@ -222,6 +247,39 @@ export default function ReviewPage() {
                     <div><span className="section-kicker">DOWNSTREAM WORKFLOW</span><h2>Response planning</h2></div>
                     <span className={`plan-status plan-status--${(plan?.status || incident.status).toLowerCase()}`}>{plan?.status || incident.status}</span>
                   </div>
+
+                  <div style={{ marginBottom: '1rem', padding: '0.9rem 1rem', border: '1px solid rgba(148, 163, 184, 0.4)', borderRadius: '0.75rem', background: 'rgba(15, 23, 42, 0.32)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                      <strong>Priority classification</strong>
+                      <span style={{ fontSize: '0.82rem', opacity: 0.8 }}>Rule v{incident.priority_rule_version || 'default'}</span>
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
+                      <span style={{ display: 'inline-flex', padding: '0.35rem 0.75rem', borderRadius: '999px', background: '#1d4ed8', color: '#fff', fontWeight: 700 }}>{incident.priority_band || 'LOW'}</span>
+                      <strong>{Math.round(incident.priority_score ?? 0)} / 100</strong>
+                    </div>
+                    {incident.priority_is_overridden && (
+                      <p style={{ margin: '0.75rem 0 0', color: '#fbbf24' }}>
+                        Override reason: {incident.priority_override_reason || 'Not provided'}
+                      </p>
+                    )}
+                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginTop: '0.9rem', flexWrap: 'wrap' }}>
+                      <input
+                        aria-label="Priority override reason"
+                        value={priorityReason}
+                        onChange={(event) => setPriorityReason(event.target.value)}
+                        placeholder="Override reason"
+                        style={{ flex: '1 1 200px', minWidth: '180px' }}
+                      />
+                      <select value={priorityBand} onChange={(event) => setPriorityBand(event.target.value)} aria-label="Override priority band" style={{ minWidth: '150px' }}>
+                        <option value="LOW">LOW</option>
+                        <option value="MEDIUM">MEDIUM</option>
+                        <option value="HIGH">HIGH</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                      </select>
+                      <button className="button button--primary" type="button" onClick={applyPriorityOverride}>Apply override</button>
+                    </div>
+                  </div>
+
                   {!plan ? (
                     <>
                       <p className="plan-explanation">Generate a deterministic draft from the corrected facts. It will not name or assign responders because no verified resource registry is configured.</p>

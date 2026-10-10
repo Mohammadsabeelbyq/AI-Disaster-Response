@@ -102,6 +102,31 @@ class ExtractionCorrection(BaseModel):
     facts: ExtractedFacts
 
 
+class PriorityConfigInput(BaseModel):
+    weights: dict[str, float]
+    thresholds: dict[str, float]
+    notes: str | None = Field(default=None, max_length=1000)
+
+
+class PriorityConfigOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    version: str
+    is_active: bool
+    weights: dict[str, float]
+    thresholds: dict[str, float]
+    notes: str | None
+    created_by: uuid.UUID
+    created_at: datetime
+
+
+class PriorityOverrideInput(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+    score: float | None = Field(default=None, ge=0, le=100)
+    band: str | None = Field(default=None, pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
+
+
 class IncidentSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -137,6 +162,23 @@ class IncidentOut(BaseModel):
     confirmed_by: uuid.UUID
     confirmed_at: datetime
     plans: list[ResponsePlanOut]
+    priority_score: float | None = None
+    priority_band: str | None = None
+    priority_rule_version: str | None = None
+    priority_factors: dict[str, float] | None = None
+    priority_is_overridden: bool = False
+    priority_original_score: float | None = None
+    priority_original_band: str | None = None
+    priority_override_reason: str | None = None
+    priority_override_by: uuid.UUID | None = None
+    priority_override_at: datetime | None = None
+
+    @field_validator("confirmed_at", "priority_override_at", mode="before")
+    @classmethod
+    def _ensure_utc_datetime(cls, value):
+        if isinstance(value, datetime) and value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value
 
 
 class PlanDecision(BaseModel):

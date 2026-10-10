@@ -48,6 +48,18 @@ export function getIncident(incidentId) {
   return request(`/incidents/${incidentId}`);
 }
 
+export function getIncidentPriority(incidentId) {
+  return request(`/incidents/${incidentId}/priority`);
+}
+
+export function overrideIncidentPriority(incidentId, { reason, score, band }) {
+  return request(`/incidents/${incidentId}/priority/override`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason, score, band }),
+  });
+}
+
 export function generateResponsePlan(incidentId) {
   return request(`/incidents/${incidentId}/plans`, { method: 'POST' });
 }

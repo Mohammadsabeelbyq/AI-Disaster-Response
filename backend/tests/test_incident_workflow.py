@@ -1,7 +1,8 @@
 import uuid
 
 from app.database import SessionLocal
-from app.models.incident import WorkflowAudit
+from app.models.incident import PriorityRuleConfig, WorkflowAudit
+from app.services.incident_service import _next_priority_version
 
 
 def _login_coordinator(client):
@@ -101,6 +102,99 @@ def test_dismissed_report_cannot_be_confirmed_or_planned(client, valid_form):
         assert events[1].details["reason"] == "Duplicate report."
 
 
+def test_admin_can_manage_priority_configuration_and_rule_versioning(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    client.post("/auth/logout")
+    admin_login = client.post("/auth/login", json={
+        "email": "admin@example.test",
+        "password": "test-admin-password-123",
+        "role": "ADMIN",
+    })
+    assert admin_login.status_code == 200
+
+    config = client.post('/priority-configs', json={
+        'weights': {
+            'life_safety_risk': 0.35,
+            'urgency': 0.25,
+            'affected_population': 0.2,
+            'hazard_level': 0.12,
+            'evidence_confidence': 0.08,
+        },
+        'thresholds': {'CRITICAL': 75, 'HIGH': 55, 'MEDIUM': 30, 'LOW': 0},
+        'notes': 'Initial policy version',
+    })
+    assert config.status_code == 201, config.text
+    config_body = config.json()
+    assert config_body['version']
+    assert config_body['is_active'] is True
+    assert config_body['weights']['urgency'] == 0.25
+
+    assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+    priority = client.get(f"/incidents/{incident['id']}/priority").json()
+    assert priority['priority_rule_version'] == config_body['version']
+    assert priority['priority_score'] >= 0
+    assert priority['priority_band'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'}
+    assert priority['priority_factors']['urgency'] >= 0
+
+    next_config = client.post('/priority-configs', json={
+        'weights': {
+            'life_safety_risk': 0.2,
+            'urgency': 0.2,
+            'affected_population': 0.2,
+            'hazard_level': 0.2,
+            'evidence_confidence': 0.2,
+        },
+        'thresholds': {'CRITICAL': 90, 'HIGH': 70, 'MEDIUM': 40, 'LOW': 0},
+        'notes': 'Updated policy version',
+    })
+    assert next_config.status_code == 201, next_config.text
+    assert next_config.json()['version'] != config_body['version']
+
+    historical_priority = client.get(f"/incidents/{incident['id']}/priority").json()
+    assert historical_priority['priority_rule_version'] == config_body['version']
+    assert historical_priority['priority_score'] == priority['priority_score']
+    assert historical_priority['priority_band'] == priority['priority_band']
+
+    next_report = client.post('/reports', data=valid_form).json()
+    assert client.post(f"/reports/{next_report['id']}/review").status_code == 200
+    next_incident = client.post(f"/reports/{next_report['id']}/confirm").json()
+    next_priority = client.get(f"/incidents/{next_incident['id']}/priority").json()
+    assert next_priority['priority_rule_version'] == next_config.json()['version']
+
+    invalid = client.post('/priority-configs', json={
+        'weights': {'life_safety_risk': 0.6, 'urgency': 0.6},
+        'thresholds': {'CRITICAL': 50, 'HIGH': 30, 'MEDIUM': 20, 'LOW': 10},
+    })
+    assert invalid.status_code == 422
+
+
+def test_coordinator_can_override_priority_with_reason_and_traceability(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    assert _login_coordinator(client).status_code == 200
+    assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+    priority = client.get(f"/incidents/{incident['id']}/priority").json()
+    assert priority['priority_is_overridden'] is False
+
+    override = client.post(
+        f"/incidents/{incident['id']}/priority/override",
+        json={"reason": "Human review identified a higher risk than the score suggests."},
+    )
+    assert override.status_code == 200
+    final = override.json()
+    assert final['priority_is_overridden'] is True
+    assert final['priority_override_reason'] == 'Human review identified a higher risk than the score suggests.'
+    assert final['priority_override_by'] == final['confirmed_by']
+    assert final['priority_override_at']
+    assert final['priority_original_score'] == priority['priority_score']
+    assert final['priority_original_band'] == priority['priority_band']
+    assert final['priority_band'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'}
+
+    missing_reason = client.post(f"/incidents/{incident['id']}/priority/override", json={"reason": "   "})
+    assert missing_reason.status_code == 422
+
+
 def test_user_cannot_start_review_or_generate_response_plans(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     assert client.post(f"/reports/{report['id']}/review").status_code == 403
@@ -124,3 +218,20 @@ def test_admin_can_review_confirm_generate_and_reject_plan(client, valid_form):
     assert rejected.status_code == 200
     assert rejected.json()["status"] == "REJECTED"
     assert rejected.json()["decided_by"] == login.json()["id"]
+
+
+def test_priority_policy_versions_increment_numerically(client):
+    admin = client.post("/auth/login", json={
+        "email": "admin@example.test",
+        "password": "test-admin-password-123",
+        "role": "ADMIN",
+    })
+    assert admin.status_code == 200
+
+    with SessionLocal() as db:
+        db.add_all([
+            PriorityRuleConfig(version="v9", weights={}, thresholds={}, created_by=uuid.UUID(admin.json()["id"])),
+            PriorityRuleConfig(version="v10", weights={}, thresholds={}, created_by=uuid.UUID(admin.json()["id"])),
+        ])
+        db.commit()
+        assert _next_priority_version(db) == "v11"

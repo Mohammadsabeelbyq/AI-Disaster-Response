@@ -37,6 +37,7 @@ app.include_router(reports.router)
 app.include_router(workflow.reports_router)
 app.include_router(workflow.incidents_router)
 app.include_router(workflow.plans_router)
+app.include_router(workflow.priority_router)
 if (FRONTEND_DIST_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_DIR / "assets"), name="frontend-assets")
 

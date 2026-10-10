@@ -264,6 +264,38 @@ button { color: inherit; }
 .review-loading, .review-empty { display: flex; min-height: 130px; align-items: center; justify-content: center; gap: 9px; color: var(--color-muted); font-size: 11px; }
 .review-empty { padding: 20px; }
 .review-layout + .notice { margin-bottom: 12px; }
+.priority-admin-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(270px, .8fr); gap: 16px; align-items: start; }
+.priority-policy-form, .priority-active-panel, .priority-history-panel { min-width: 0; padding: 19px; }
+.priority-policy-form > .panel-heading { margin-bottom: 6px; }
+.priority-policy-help { margin: 0 0 13px; color: var(--color-muted); font-size: 10px; line-height: 1.55; }
+.priority-weight-list { border-top: 1px solid var(--color-line); }
+.priority-weight-row { display: flex; min-height: 53px; align-items: center; justify-content: space-between; gap: 14px; border-bottom: 1px solid var(--color-line); color: var(--color-ink-soft); font-size: 11px; font-weight: 600; }
+.priority-number-field { display: flex; width: 145px; min-height: 34px; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: white; }
+.priority-number-field:focus-within { border-color: var(--color-brand); box-shadow: 0 0 0 2px rgb(23 76 66 / 10%); }
+.priority-number-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--color-ink); font-size: 11px; }
+.priority-number-field small { color: var(--color-muted); font-size: 9px; }
+.priority-threshold-section { margin-top: 21px; padding-top: 17px; border-top: 1px solid var(--color-line); }
+.priority-threshold-section .panel-heading { margin-bottom: 5px; }
+.priority-threshold-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 13px; }
+.priority-threshold-grid .field { margin-top: 10px; }
+.priority-validation { margin: 9px 0 0; color: var(--color-danger); font-size: 10px; }
+.priority-notes-field { margin-top: 17px; }
+.priority-policy-actions { align-items: center; }
+.priority-policy-actions > span { max-width: 300px; line-height: 1.5; }
+.priority-policy-aside { display: grid; gap: 14px; }
+.priority-active-panel .panel-heading, .priority-history-panel .panel-heading { margin-bottom: 12px; }
+.priority-active-panel h2, .priority-history-panel h2 { font-size: 15px; }
+.priority-active-values { display: grid; gap: 10px; margin: 0; }
+.priority-active-values div { display: grid; gap: 3px; }
+.priority-active-values dt { color: var(--color-muted); font-size: 9px; }
+.priority-active-values dd { margin: 0; color: var(--color-ink); font-size: 10px; font-weight: 600; overflow-wrap: anywhere; }
+.priority-version-list { display: grid; max-height: 390px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.priority-version { display: grid; gap: 4px; padding: 11px 0; border-top: 1px solid var(--color-line); }
+.priority-version--active { border-left: 2px solid var(--color-success); padding-left: 9px; }
+.priority-version__heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.priority-version__heading strong { color: var(--color-ink); font-size: 11px; }
+.priority-version__heading span { color: var(--color-success); font-size: 8px; font-weight: 700; letter-spacing: .08em; }
+.priority-version time, .priority-version small { color: var(--color-muted); font-size: 9px; line-height: 1.45; }
 
 @media (max-width: 700px) {
   .intake-header { align-items: flex-start; flex-direction: column; gap: 14px; padding: 14px 20px; }
@@ -277,6 +309,7 @@ button { color: inherit; }
   .import-aside h2 { margin-top: 6px; }
   .review-layout { grid-template-columns: minmax(0, 1fr); }
   .review-list { max-height: 260px; overflow-y: auto; }
+  .priority-admin-layout { grid-template-columns: minmax(0, 1fr); }
 }
 @media (max-width: 420px) {
   .intake-header { padding-right: 16px; padding-left: 16px; }
@@ -298,6 +331,8 @@ button { color: inherit; }
   .account-menu { width: 100%; justify-content: space-between; }
   .extraction-facts { grid-template-columns: 1fr; }
   .mode-switch__link { gap: 5px; padding: 0 8px; font-size: 10px; }
+  .mode-switch { flex-wrap: wrap; }
+  .mode-switch__link { flex: 1 1 auto; }
   .header-link { font-size: 10px; }
   .login-panel { padding: 18px 14px; }
   .role-option small { min-height: 20px; }
@@ -306,4 +341,8 @@ button { color: inherit; }
   .source-panel, .extraction-panel { padding: 15px 13px; }
   .review-fields { grid-template-columns: minmax(0, 1fr); }
   .source-meta { grid-template-columns: minmax(0, 1fr); }
+  .priority-policy-form, .priority-active-panel, .priority-history-panel { padding: 15px 13px; }
+  .priority-threshold-grid { gap: 0 8px; }
+  .priority-policy-actions { align-items: stretch; }
+  .priority-policy-actions .button { align-self: flex-end; }
 }

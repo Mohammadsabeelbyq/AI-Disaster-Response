@@ -2,7 +2,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, JSON, String, Text, Uuid
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.session import Base
@@ -10,6 +10,19 @@ from app.database.session import Base
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class PriorityRuleConfig(Base):
+    __tablename__ = "priority_rule_configs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    version: Mapped[str] = mapped_column(String(40), nullable=False, unique=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    weights: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    thresholds: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
 class Incident(Base):
@@ -21,10 +34,36 @@ class Incident(Base):
     status: Mapped[str] = mapped_column(String(30), default="CONFIRMED", nullable=False)
     confirmed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+    priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    priority_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    priority_rule_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    priority_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    priority_is_overridden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    priority_original_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    priority_original_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    priority_override_reason: Mapped[str | None] = mapped_column(Text)
+    priority_override_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    priority_override_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    priority_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     report: Mapped["IncidentReport"] = relationship(back_populates="incident")
     plans: Mapped[list["ResponsePlan"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan", order_by="ResponsePlan.version")
+
+
+class IncidentPriorityOverride(Base):
+    __tablename__ = "incident_priority_overrides"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True)
+    actor_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    original_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    original_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    override_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    override_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
 
 class ResponsePlan(Base):
