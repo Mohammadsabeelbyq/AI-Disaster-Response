@@ -230,12 +230,34 @@ button { color: inherit; }
 .plan-regenerate { min-height: 34px; margin-top: 12px; font-size: 10px; }
 .plan-decision-meta { margin-top: 10px; margin-bottom: 0; }
 .confidence-scale { color: var(--color-muted); font-size: 9px; }
+.coordinator-note { display: grid; gap: 4px; margin-bottom: 16px; padding: 10px 12px; border-left: 3px solid var(--color-brand); background: var(--color-brand-wash); }
+.coordinator-note strong { color: var(--color-brand); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.coordinator-note p { margin: 0; color: var(--color-ink-soft); font-size: 10px; line-height: 1.5; }
+.fact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+.fact-card { display: grid; gap: 8px; padding: 11px 12px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
+.fact-card--corrected { border-color: #cfdfe9; background: #f8fbff; }
+.fact-card__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fact-card__header span { color: var(--color-brand); font-size: 10px; font-weight: 700; }
+.fact-card__header em { padding: 2px 6px; border-radius: 999px; background: var(--color-signal-wash); color: var(--color-brand); font-size: 8px; font-style: normal; letter-spacing: .04em; text-transform: uppercase; }
+.fact-card__stack { display: grid; gap: 7px; }
+.fact-card__stack div { display: grid; gap: 3px; }
+.fact-card__stack small, .fact-card__evidence small { color: var(--color-muted); font-size: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.fact-card__stack strong { color: var(--color-ink); font-size: 10px; line-height: 1.45; }
+.fact-card__evidence { display: grid; gap: 5px; padding-top: 8px; border-top: 1px solid var(--color-line); }
+.fact-card__evidence ul { margin: 0; padding-left: 16px; color: var(--color-ink-soft); font-size: 9px; line-height: 1.6; }
+.fact-card__score { color: var(--color-brand); font-size: 9px; font-weight: 700; }
+.source-traceability { display: grid; gap: 8px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--color-line); }
+.source-traceability h3 { margin: 0; color: var(--color-ink-soft); font-size: 10px; }
+.trace-list { display: grid; gap: 7px; }
+.trace-list p { display: grid; gap: 3px; margin: 0; color: var(--color-muted); font-size: 9px; }
+.trace-list p strong { color: var(--color-brand); font-size: 8px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.source-traceability__image { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.trace-badge { display: inline-flex; align-items: center; padding: 4px 7px; border-radius: 999px; background: var(--color-signal-wash); color: #77581f; font-size: 8px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.source-traceability__image a { color: var(--color-brand); font-size: 9px; font-weight: 700; text-decoration: underline; text-underline-offset: 3px; }
 .review-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 13px; }
 .review-fields .field { min-width: 0; }
-.evidence-block { margin-top: 17px; padding-top: 13px; border-top: 1px solid var(--color-line); }
-.evidence-block h3 { margin: 0 0 8px; color: var(--color-ink-soft); font-size: 10px; }
-.evidence-block p { display: grid; gap: 3px; margin: 7px 0; color: var(--color-muted); font-size: 9px; }
-.evidence-block p strong { color: var(--color-brand); font-size: 9px; font-weight: 700; text-transform: capitalize; }
+.review-form-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--color-line); }
+.review-safe-note { max-width: 320px; color: var(--color-muted); font-size: 9px; line-height: 1.5; }
 .image-analysis-state, .review-history-note { margin: 12px 0 0; color: var(--color-muted); font-size: 9px; }
 .image-analysis-state strong { color: var(--color-ink-soft); }
 .image-analysis-state span { display: block; margin-top: 4px; }

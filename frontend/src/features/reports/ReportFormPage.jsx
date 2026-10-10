@@ -101,8 +101,8 @@ export default function ReportFormPage() {
           {message && <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.kind === 'success' && <Check size={17} />}{message.text}</div>}
           {submittedReport?.extraction && (
             <section className="extraction-results" aria-live="polite" aria-label="Extracted incident details">
-              <div className="panel-heading">
-                <div><span className="section-kicker">TEXT ANALYSIS · {submittedReport.extraction.extractor_version}</span><h2>Details identified in your description</h2></div>
+                <div className="panel-heading">
+                <div><span className="section-kicker">REPORT ANALYSIS · {submittedReport.extraction.extractor_version}</span><h2>Details identified in your report</h2></div>
                 <span className="result-status result-status--accepted">Text ready</span>
               </div>
               {extractedFacts ? (
@@ -116,7 +116,7 @@ export default function ReportFormPage() {
                     ))}
                   </dl>
                   <details className="extraction-evidence">
-                    <summary>View supporting phrases from your description ({evidenceItems.length})</summary>
+                    <summary>View extraction evidence ({evidenceItems.length})</summary>
                     {evidenceItems.length ? (
                       <ul>{evidenceItems.map((item) => <li key={`${item.field}-${item.index}`}><strong>{item.field.replaceAll('_', ' ')}:</strong> “{item.text}”</li>)}</ul>
                     ) : <p>No facts were identified; no values were inferred.</p>}

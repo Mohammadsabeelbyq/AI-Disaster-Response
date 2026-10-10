@@ -19,6 +19,23 @@ const fields = [
   ['location_mentions', 'Location mentions'],
 ];
 
+const factLabels = {
+  incident_category: 'Incident category',
+  urgency: 'Urgency',
+  affected_persons: 'Affected persons',
+  severity_cues: 'Severity cues',
+  hazards: 'Hazards',
+  requested_assistance: 'Requested assistance',
+  location_mentions: 'Location mentions',
+};
+
+function formatFactValue(value) {
+  if (value == null) return 'Unknown';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'Unknown';
+  if (typeof value === 'number') return String(value);
+  return String(value);
+}
+
 function draftFrom(report) {
   return { ...(report.extraction.corrected_facts || report.extraction.extracted_facts) };
 }
@@ -35,6 +52,29 @@ export default function ReviewPage() {
   const [plan, setPlan] = useState(null);
   const [decisionReason, setDecisionReason] = useState('');
   const selected = reports.find((report) => report.id === selectedId) || null;
+  const factRows = (selected?.extraction ? [
+    'incident_category', 'urgency', 'affected_persons', 'severity_cues', 'hazards', 'requested_assistance', 'location_mentions',
+  ] : []).map((key) => {
+    const extraction = selected.extraction;
+    const originalValue = extraction.extracted_facts?.[key] ?? null;
+    const correctedValue = extraction.corrected_facts?.[key] ?? null;
+    const effectiveValue = extraction.effective_facts?.[key] ?? null;
+    const evidence = extraction.evidence?.[key] || [];
+    const confidence = extraction.confidence?.[key];
+    const hasCorrection = JSON.stringify(originalValue) !== JSON.stringify(correctedValue) && correctedValue !== null;
+    return {
+      key,
+      label: factLabels[key] || key.replaceAll('_', ' '),
+      originalValue,
+      correctedValue,
+      effectiveValue,
+      evidence,
+      confidence,
+      hasCorrection,
+    };
+  }).filter(({ originalValue, correctedValue, effectiveValue }) => {
+    return originalValue !== null || correctedValue !== null || effectiveValue !== null;
+  });
 
   useEffect(() => {
     listReports().then((items) => {
@@ -212,7 +252,76 @@ export default function ReviewPage() {
               )}
 
               <section className="panel extraction-panel">
-                <div className="panel-heading"><div><span className="section-kicker">TEXT EXTRACTION · {selected.extraction.extractor_version}</span><h2>Review extracted facts</h2></div><span className="confidence-scale">Confidence: 0–1</span></div>
+                <div className="panel-heading"><div><span className="section-kicker">REPORT ANALYSIS · {selected.extraction.extractor_version}</span><h2>Review extracted facts</h2></div><span className="confidence-scale">Model score: 0–1</span></div>
+
+                <div className="coordinator-note">
+                  <strong>Coordinator review</strong>
+                  <p>Correct extracted facts before planning. The original submission and first-pass extraction remain unchanged; only the effective facts used downstream are updated.</p>
+                </div>
+
+                <div className="fact-grid">
+                  {factRows.map(({ key, label, originalValue, correctedValue, effectiveValue, evidence, confidence, hasCorrection }) => (
+                    <div key={key} className={`fact-card${hasCorrection ? ' fact-card--corrected' : ''}`}>
+                      <div className="fact-card__header">
+                        <span>{label}</span>
+                        {hasCorrection && <em>Corrected</em>}
+                      </div>
+                      <div className="fact-card__stack">
+                        <div>
+                          <small>Original extraction</small>
+                          <strong>{formatFactValue(originalValue)}</strong>
+                        </div>
+                        {correctedValue !== null && (
+                          <div>
+                            <small>Coordinator value</small>
+                            <strong>{formatFactValue(correctedValue)}</strong>
+                          </div>
+                        )}
+                        <div>
+                          <small>Used for planning</small>
+                          <strong>{formatFactValue(effectiveValue)}</strong>
+                        </div>
+                      </div>
+                      {(evidence.length || confidence != null) && (
+                        <div className="fact-card__evidence">
+                          <small>Evidence</small>
+                          <ul>
+                            {evidence.length ? evidence.map((item) => <li key={`${key}-${item}`}>{item}</li>) : <li>Evidence was not recorded for this field.</li>}
+                          </ul>
+                          {confidence != null && <span className="fact-card__score">Confidence: {confidence.toFixed(2)}</span>}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="source-traceability">
+                  <h3>Evidence traceability</h3>
+                  {Object.keys(selected.extraction.evidence || {}).length ? (
+                    <div className="trace-list">
+                      {Object.entries(selected.extraction.evidence).map(([key, evidence]) => (
+                        <p key={key}><strong>{factLabels[key] || key.replaceAll('_', ' ')}</strong><span>{evidence.join(' · ')}</span></p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p>No extracted evidence is available.</p>
+                  )}
+                  {selected.image && (
+                    <div className="source-traceability__image">
+                      <span className="trace-badge">Traceable to attached image</span>
+                      <a href={selected.image.url} target="_blank" rel="noreferrer">Open attached image</a>
+                    </div>
+                  )}
+                  {selected.extraction.image_analysis_status !== 'NOT_PROVIDED' && (
+                    <div className="image-analysis-state">
+                      <span>Image analysis: <strong>{selected.extraction.image_analysis_status.replaceAll('_', ' ')}</strong></span>
+                      {selected.extraction.image_cues?.length > 0 && selected.extraction.image_cues.map((cue) => (
+                        <span key={`${cue.cue}-${cue.evidence}`}>{cue.cue} ({cue.confidence.toFixed(2)}) · {cue.evidence}</span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
                 <form onSubmit={saveCorrection}>
                   <div className="review-fields">
                     <label className="field"><span>Incident category</span><input value={draft.incident_category || ''} onChange={(event) => setValue('incident_category', event.target.value || null)} placeholder="Unknown" /></label>
@@ -220,10 +329,8 @@ export default function ReviewPage() {
                     <label className="field"><span>Affected persons</span><input type="number" min="0" value={draft.affected_persons ?? ''} onChange={(event) => setValue('affected_persons', event.target.value === '' ? null : Number(event.target.value))} placeholder="Unknown" /></label>
                     {fields.map(([key, label]) => <label className="field" key={key}><span>{label}</span><input value={(draft[key] || []).join(', ')} onChange={(event) => setValue(key, event.target.value.split(',').map((part) => part.trim()).filter(Boolean))} placeholder="Unknown" /></label>)}
                   </div>
-                  <div className="evidence-block"><h3>Extraction evidence and confidence</h3>{Object.keys(selected.extraction.evidence).length ? Object.entries(selected.extraction.evidence).map(([key, evidence]) => <p key={key}><strong>{key.replaceAll('_', ' ')} · {selected.extraction.confidence[key]?.toFixed(2)}</strong><span>{evidence.join(' · ')}</span></p>) : <p>No fields had enough evidence to assign confidence.</p>}</div>
-                  <div className="image-analysis-state">Image analysis: <strong>{selected.extraction.image_analysis_status.replaceAll('_', ' ')}</strong>{selected.extraction.image_cues?.length > 0 && selected.extraction.image_cues.map((cue) => <span key={`${cue.cue}-${cue.evidence}`}>{cue.cue} ({cue.confidence.toFixed(2)}) · {cue.evidence}</span>)}</div>
                   {selected.extraction.reviewed_at && <p className="review-history-note">Last corrected {new Date(selected.extraction.reviewed_at).toLocaleString()} · {selected.extraction.reviews.length} saved review{selected.extraction.reviews.length === 1 ? '' : 's'}</p>}
-                  <div className="form-actions"><span>Submitted source and first-pass extraction remain unchanged.</span><button className="button button--primary" type="submit" disabled={saving}><Save size={16} />{saving ? 'Saving…' : 'Save correction'}</button></div>
+                  <div className="review-form-foot"><span className="review-safe-note">Submitted source text and first-pass extraction are preserved for audit and traceability.</span><button className="button button--primary" type="submit" disabled={saving}><Save size={16} />{saving ? 'Saving…' : 'Save correction'}</button></div>
                 </form>
               </section>
             </div>
