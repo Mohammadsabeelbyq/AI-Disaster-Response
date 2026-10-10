@@ -6,6 +6,7 @@ import ImportPage from './features/reports/ImportPage.jsx';
 import ReportFormPage from './features/reports/ReportFormPage.jsx';
 import ReviewPage from './features/reports/ReviewPage.jsx';
 import PriorityPolicyPage from './features/admin/PriorityPolicyPage.jsx';
+import IncidentMapPage from './features/incidents/IncidentMapPage.jsx';
 
 export default function App() {
   const { user, loading, signOut } = useAuth();
@@ -25,6 +26,9 @@ export default function App() {
           <Route path="/import" element={<ImportPage />} />
           {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
             <Route path="/review" element={<ReviewPage />} />
+          )}
+          {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
+            <Route path="/incidents/map" element={<IncidentMapPage />} />
           )}
           {user?.role === 'ADMIN' && (
             <Route path="/admin/priority-policy" element={<PriorityPolicyPage />} />

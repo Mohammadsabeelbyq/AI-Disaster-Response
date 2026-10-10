@@ -198,7 +198,39 @@ def test_coordinator_can_override_priority_with_reason_and_traceability(client, 
 def test_user_cannot_start_review_or_generate_response_plans(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     assert client.post(f"/reports/{report['id']}/review").status_code == 403
+    assert client.get("/incidents").status_code == 403
     assert client.post("/incidents/00000000-0000-0000-0000-000000000000/plans").status_code == 403
+
+
+def test_incident_list_includes_saved_report_location_and_latest_priority(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    assert client.post("/auth/logout").status_code == 204
+    assert client.get("/incidents").status_code == 401
+    assert _login_coordinator(client).status_code == 200
+    assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    listed = client.get("/incidents")
+    assert listed.status_code == 200
+    map_incident = listed.json()[0]
+    assert map_incident["id"] == incident["id"]
+    assert map_incident["report"] == {
+        "id": report["id"],
+        "disaster_type": "FLOOD",
+        "description": report["description"],
+        "latitude": 10.027,
+        "longitude": 76.308,
+        "location_name": "Edappally",
+    }
+    assert map_incident["status"] == "CONFIRMED"
+    assert map_incident["priority_band"] in {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
+
+    updated = client.post(
+        f"/incidents/{incident['id']}/priority/override",
+        json={"reason": "Current field assessment", "band": "CRITICAL"},
+    )
+    assert updated.status_code == 200
+    assert client.get("/incidents").json()[0]["priority_band"] == "CRITICAL"
 
 
 def test_admin_can_review_confirm_generate_and_reject_plan(client, valid_form):

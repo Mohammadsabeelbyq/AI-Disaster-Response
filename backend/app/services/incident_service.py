@@ -304,13 +304,17 @@ def dismiss_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID,
 
 def list_incidents(db: Session) -> list[Incident]:
     return list(db.scalars(
-        select(Incident).options(joinedload(Incident.plans)).order_by(Incident.confirmed_at.desc())
+        select(Incident).options(
+            joinedload(Incident.plans), joinedload(Incident.report)
+        ).order_by(Incident.confirmed_at.desc())
     ).unique())
 
 
 def get_incident(db: Session, incident_id: uuid.UUID) -> Incident:
     incident = db.scalar(
-        select(Incident).options(joinedload(Incident.plans)).where(Incident.id == incident_id)
+        select(Incident).options(
+            joinedload(Incident.plans), joinedload(Incident.report)
+        ).where(Incident.id == incident_id)
     )
     if incident is None:
         raise NotFound("Incident not found.")

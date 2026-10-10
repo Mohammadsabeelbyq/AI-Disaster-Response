@@ -153,11 +153,23 @@ class ResponsePlanOut(BaseModel):
     decision_reason: str | None
 
 
+class IncidentReportSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    disaster_type: str
+    description: str
+    latitude: float
+    longitude: float
+    location_name: str | None
+
+
 class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     report_id: uuid.UUID
+    report: IncidentReportSummaryOut
     status: str
     confirmed_by: uuid.UUID
     confirmed_at: datetime

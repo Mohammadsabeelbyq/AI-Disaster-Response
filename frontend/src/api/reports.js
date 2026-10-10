@@ -48,6 +48,10 @@ export function getIncident(incidentId) {
   return request(`/incidents/${incidentId}`);
 }
 
+export function listIncidents() {
+  return request('/incidents');
+}
+
 export function getIncidentPriority(incidentId) {
   return request(`/incidents/${incidentId}/priority`);
 }
