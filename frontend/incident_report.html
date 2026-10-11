@@ -27,6 +27,15 @@
   .msg.ok { display:block; color:var(--ok); border-color:var(--ok); }
   .msg.err { display:block; color:var(--err); border-color:var(--err); }
   .msg ul { margin:6px 0 0 18px; padding:0; }
+  .extraction { margin-top:14px; padding:14px; border:1px solid var(--line); border-radius:6px; background:var(--bg); }
+  .extraction h2 { margin-bottom:4px; }
+  .extraction-meta, .extraction-note { color:var(--muted); font-size:.85rem; }
+  .extraction dl { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .extraction dl div { padding:8px; border:1px solid var(--line); border-radius:5px; }
+  .extraction dt { color:var(--muted); font-size:.8rem; font-weight:600; }
+  .extraction dd { margin:3px 0 0; overflow-wrap:anywhere; }
+  .extraction details { font-size:.9rem; }
+  @media (max-width:520px) { .extraction dl { grid-template-columns:1fr; } }
   table { width:100%; border-collapse:collapse; margin-top:10px; font-size:.9rem; }
   th, td { text-align:left; padding:4px 6px; border-bottom:1px solid var(--line); }
   .acc { color:var(--ok); font-weight:600; } .rej { color:var(--err); font-weight:600; }
@@ -64,6 +73,7 @@
 
       <button type="submit" id="submitBtn">Submit report</button>
       <div id="formMsg" class="msg" role="status"></div>
+      <div id="extractionResults"></div>
     </form>
   </div>
 
@@ -93,6 +103,121 @@
     }
   }
 
+  function renderExtraction(report) {
+    const root = $("extractionResults");
+    root.replaceChildren();
+    if (!report.extraction) return;
+    const panel = document.createElement("section");
+    panel.className = "extraction";
+    const heading = document.createElement("h2");
+    heading.textContent = "Details identified in your description";
+    panel.appendChild(heading);
+    const meta = document.createElement("p");
+    meta.className = "extraction-meta";
+    meta.textContent = `Text analysis: ${report.extraction.extractor_version} · Image analysis: ${report.extraction.image_analysis_status}`;
+    panel.appendChild(meta);
+    const facts = report.extraction.effective_facts || report.extraction.extracted_facts;
+    if (!facts) {
+      const note = document.createElement("p");
+      note.className = "extraction-note";
+      note.textContent = "Text analysis could not be completed. Your report was saved for review.";
+      panel.appendChild(note);
+      root.appendChild(panel);
+      return;
+    }
+    const labels = [
+      ["Disaster category", facts.incident_category], ["Severity cues", facts.severity_cues],
+      ["Urgency", facts.urgency], ["Affected people", facts.affected_persons],
+      ["Hazards", facts.hazards], ["Requested assistance", facts.requested_assistance],
+      ["Location mentions", facts.location_mentions],
+    ];
+    const list = document.createElement("dl");
+    labels.forEach(([label, value]) => {
+      const item = document.createElement("div");
+      const term = document.createElement("dt");
+      term.textContent = label;
+      const detail = document.createElement("dd");
+      detail.textContent = Array.isArray(value) ? (value.length ? value.join(", ") : "Not identified") : (value ?? "Not identified");
+      item.append(term, detail);
+      list.appendChild(item);
+    });
+    panel.appendChild(list);
+    const evidence = document.createElement("details");
+    const summary = document.createElement("summary");
+    const evidenceItems = Object.entries(report.extraction.evidence || {}).flatMap(
+      ([field, phrases]) => phrases.map((text) => ({ field, text })),
+    );
+    summary.textContent = `Supporting phrases from the report (${evidenceItems.length})`;
+    evidence.appendChild(summary);
+    const evidenceList = document.createElement("ul");
+    evidenceItems.forEach((span) => {
+      const item = document.createElement("li");
+      item.textContent = `${span.field.replaceAll("_", " ")}: “${span.text}”`;
+      evidenceList.appendChild(item);
+    });
+    evidence.appendChild(evidenceList);
+    panel.appendChild(evidence);
+    const note = document.createElement("p");
+    note.className = "extraction-note";
+    note.textContent = "Automated suggestions only—not verified incident facts or a dispatch decision.";
+    panel.appendChild(note);
+    root.appendChild(panel);
+  }
+
+  function appendImportReportDetails(cell, report) {
+    const id = document.createElement("div");
+    const idLabel = document.createElement("strong");
+    idLabel.textContent = "ID: ";
+    id.append(idLabel, document.createTextNode(report?.id || "Unavailable"));
+    cell.appendChild(id);
+
+    const timestamp = document.createElement("div");
+    const timestampLabel = document.createElement("strong");
+    timestampLabel.textContent = "Submitted: ";
+    timestamp.append(timestampLabel, document.createTextNode(report?.submitted_at || "Unavailable"));
+    cell.appendChild(timestamp);
+
+    const factsCell = cell.parentElement.insertCell();
+    const extraction = report?.extraction;
+    if (!extraction) { factsCell.textContent = "Details unavailable"; return; }
+    const status = document.createElement("strong");
+    status.textContent = `${extraction.extractor_version} · ${extraction.image_analysis_status}`;
+    factsCell.appendChild(status);
+    const facts = extraction.effective_facts || extraction.extracted_facts;
+    if (!facts) {
+      factsCell.appendChild(document.createTextNode(" — text analysis unavailable"));
+      return;
+    }
+    const values = [
+      facts.incident_category,
+      facts.urgency,
+      facts.affected_persons == null ? null : `${facts.affected_persons} affected`,
+      ...(facts.hazards || []),
+      ...(facts.requested_assistance || []),
+      ...(facts.location_mentions || []),
+    ].filter(Boolean);
+    const summary = document.createElement("p");
+    summary.textContent = values.length ? values.join(" · ") : "No details identified in description";
+    factsCell.appendChild(summary);
+    const evidenceItems = Object.entries(extraction.evidence || {}).flatMap(
+      ([field, phrases]) => phrases.map((text) => ({ field, text })),
+    );
+    if (evidenceItems.length) {
+      const disclosure = document.createElement("details");
+      const heading = document.createElement("summary");
+      heading.textContent = `Supporting phrases (${evidenceItems.length})`;
+      disclosure.appendChild(heading);
+      const list = document.createElement("ul");
+      evidenceItems.forEach(item => {
+        const row = document.createElement("li");
+        row.textContent = `${item.field.replaceAll("_", " ")}: “${item.text}”`;
+        list.appendChild(row);
+      });
+      disclosure.appendChild(list);
+      factsCell.appendChild(disclosure);
+    }
+  }
+
   function validateForm(f) {
     const errs = [];
     if (!f.disaster_type.value) errs.push("Incident type is required.");
@@ -118,8 +243,10 @@
       const res = await fetch("/reports", { method: "POST", body });
       const data = await res.json();
       if (res.ok) {
+        renderExtraction(data);
         show(msg, "ok", "Report submitted. Reference ID: " + data.id +
-          (data.image ? " (photo attached)" : ""));
+          (data.image ? " (photo attached)" : "") +
+          (data.submitted_at ? ". Submitted at: " + data.submitted_at : ""));
         f.reset();
       } else {
         show(msg, "err", data.message || "Submission failed.", data.errors);
@@ -143,15 +270,29 @@
         body: await file.text() });
       const data = await res.json();
       if (!res.ok) return show(msg, "err", data.message || "Import failed.", data.errors);
+      const accepted = data.results.filter(item => item.status === "accepted" && item.reportId);
+      const reportsById = new Map();
+      for (let start = 0; start < accepted.length; start += 10) {
+        const batch = accepted.slice(start, start + 10);
+        const reports = await Promise.all(batch.map(async item => {
+          try {
+            const response = await fetch(`/reports/${encodeURIComponent(item.reportId)}`);
+            return response.ok ? await response.json() : null;
+          } catch (_) { return null; }
+        }));
+        batch.forEach((item, index) => reportsById.set(item.reportId, reports[index]));
+      }
       show(msg, data.rejected ? "err" : "ok",
         `${data.total} records: ${data.accepted} accepted, ${data.rejected} rejected.`);
       const t = document.createElement("table");
-      t.innerHTML = "<tr><th>#</th><th>Result</th><th>Details</th></tr>";
+      t.innerHTML = "<tr><th>#</th><th>Result</th><th>Epic 1.4 · Tracking</th><th>Epic 2.1 · Extracted facts</th></tr>";
       data.results.forEach(r => {
         const tr = t.insertRow();
         tr.insertCell().textContent = r.record;
         const s = tr.insertCell(); s.textContent = r.status; s.className = r.status === "accepted" ? "acc" : "rej";
-        tr.insertCell().textContent = r.status === "accepted" ? r.reportId : r.errors.join("; ");
+        const tracking = tr.insertCell();
+        if (r.status === "accepted") appendImportReportDetails(tracking, reportsById.get(r.reportId));
+        else { tracking.textContent = (r.errors || []).join("; "); tr.insertCell().textContent = "Not saved"; }
       });
       table.appendChild(t);
     } catch (_) {

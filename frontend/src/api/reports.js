@@ -4,6 +4,10 @@ export function submitReport(formData) {
   return request('/reports', { method: 'POST', body: formData });
 }
 
+export function getReport(reportId) {
+  return request(`/reports/${encodeURIComponent(reportId)}`);
+}
+
 export function importReports(kind, content) {
   return request(`/reports/import/${kind}`, {
     method: 'POST',
@@ -76,22 +80,18 @@ export function updateResource(resourceId, resource) {
   });
 }
 
-export function generateResponsePlan(incidentId) {
-  return request(`/incidents/${incidentId}/plans`, { method: 'POST' });
+export function listIncidents() {
+  return request('/incidents');
 }
 
-export function approveResponsePlan(planId, reason) {
-  return request(`/response-plans/${planId}/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  });
+export function getIncidentPriority(incidentId) {
+  return request(`/incidents/${incidentId}/priority`);
 }
 
-export function rejectResponsePlan(planId, reason) {
-  return request(`/response-plans/${planId}/reject`, {
+export function overrideIncidentPriority(incidentId, { reason, score, band }) {
+  return request(`/incidents/${incidentId}/priority/override`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({ reason, score, band }),
   });
 }

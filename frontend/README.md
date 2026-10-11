@@ -36,9 +36,10 @@ To serve the production bundle from FastAPI, run `npm run build` and restart the
 - The form's Leaflet/OpenStreetMap location picker supports address search and reverse geocoding through public Nominatim, map clicks, draggable markers, coordinate/full Google Maps URL input, and browser geolocation. Coordinates and place name are map-populated form outputs.
 - Bulk import uses `POST /reports/import/json` or `/reports/import/csv` and displays each accepted/rejected row.
 - The coordinator Review workspace can move a report through review, confirm or dismiss it, inspect/correct extracted facts, generate a needs-based response-plan draft, and record an approve/reject decision.
+- The coordinator Incident map (`/incidents/map`) displays saved, located confirmed incidents with status and priority indicators, selectable incident details, and periodic refresh from the protected incident API.
 - Response plans use corrected/effective facts, require human approval, and explicitly show that no responder assignment or dispatch occurs because verified departments/resources are not yet registered.
 - `/report-form` remains an alias for the web form.
-- Dashboard, report history, public/operational maps, department/resource management, and actual incident operations/dispatch are not implemented in this frontend slice.
+- Dashboard, report history, department/resource management, and actual incident operations/dispatch are not implemented in this frontend slice.
 
 ## Ownership and naming
 
