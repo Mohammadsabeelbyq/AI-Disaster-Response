@@ -377,7 +377,7 @@ def generate_response_plan(db: Session, incident_id: uuid.UUID,
         recommended_actions=actions,
         resource_candidates=[],
         gaps=[
-            "No verified department/resource registry is configured; no specific responders are named or assigned.",
+            "Nearby resource listings are informational only; no specific responders are named or assigned by this advisory plan.",
             *requirements,
         ],
         human_approval_required=True,

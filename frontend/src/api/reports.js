@@ -48,6 +48,38 @@ export function getIncident(incidentId) {
   return request(`/incidents/${incidentId}`);
 }
 
+export function getImpactArea(incidentId) {
+  return request(`/incidents/${incidentId}/impact-area`);
+}
+
+export function saveImpactArea(incidentId, impactArea) {
+  return request(`/incidents/${incidentId}/impact-area`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(impactArea),
+  });
+}
+
+export function findNearbyResources(incidentId) {
+  return request(`/incidents/${incidentId}/resources`);
+}
+
+export function registerResource(resource) {
+  return request('/resources', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(resource),
+  });
+}
+
+export function updateResource(resourceId, resource) {
+  return request(`/resources/${resourceId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(resource),
+  });
+}
+
 export function listIncidents() {
   return request('/incidents');
 }
@@ -61,25 +93,5 @@ export function overrideIncidentPriority(incidentId, { reason, score, band }) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason, score, band }),
-  });
-}
-
-export function generateResponsePlan(incidentId) {
-  return request(`/incidents/${incidentId}/plans`, { method: 'POST' });
-}
-
-export function approveResponsePlan(planId, reason) {
-  return request(`/response-plans/${planId}/approve`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
-  });
-}
-
-export function rejectResponsePlan(planId, reason) {
-  return request(`/response-plans/${planId}/reject`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
   });
 }

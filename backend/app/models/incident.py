@@ -47,6 +47,8 @@ class Incident(Base):
     priority_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     report: Mapped["IncidentReport"] = relationship(back_populates="incident")
+    impact_area: Mapped["ImpactArea | None"] = relationship(
+        back_populates="incident", cascade="all, delete-orphan", uselist=False)
     plans: Mapped[list["ResponsePlan"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan", order_by="ResponsePlan.version")
 
