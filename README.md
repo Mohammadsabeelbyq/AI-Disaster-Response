@@ -7,12 +7,12 @@ Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`
 
 Epic 1 stories 1.1–1.5 and Epic 2 stories 2.1–2.5 are implemented. Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory and opt-in; without configuration the report is still accepted and its extraction reports `DISABLED`.
 
-The coordinator workflow supports report review, confirmation or dismissal, and generation of a deterministic response-plan draft from the extraction's `effective_facts`. Plans require a human approve/reject decision. There is currently no department/resource registry, so plans identify response needs and explicitly record that no responders are assigned; approval does not dispatch services.
+The coordinator workflow supports report review, confirmation or dismissal, and generation of a deterministic response-plan draft from the extraction's `effective_facts`. Plans require a human approve/reject decision. Coordinators/admins can now save a radius or GeoJSON polygon impact area and view nearby registered support resources. The registry starts empty and does not invent responders; an admin must register resources before they appear. Resource listings are informational and approval does not dispatch services.
 
 **Run it** (from `backend/`):
 ```bash
 pip install -r requirements.txt
-Copy-Item .env.example .env  # configure AUTH_SECRET_KEY and local demo account passwords
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }  # never overwrite an existing local .env
 uvicorn app.main:app --reload      # then open http://localhost:8000/ to sign in
 pytest                             # run the tests
 ```
@@ -38,6 +38,8 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
 | Extraction and review history | `backend/app/models/extraction.py` |
 | Confirmed incidents, response plans, workflow audit | `backend/app/models/incident.py` |
+| Incident impact areas | `backend/app/models/impact_area.py`, `backend/app/schemas/impact_area.py` |
+| Registered resources and proximity search | `backend/app/models/resource.py`, `backend/app/services/resource_service.py` |
 | Review transitions and deterministic draft planning | `backend/app/services/incident_service.py`, `backend/app/api/workflow.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
@@ -57,6 +59,9 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | POST | `/reports/{id}/confirm` | Confirm an under-review report and create an incident |
 | POST | `/reports/{id}/dismiss` | Dismiss an under-review report with an optional reason |
 | GET | `/incidents`, `/incidents/{id}` | List confirmed incidents and their plan history |
+| GET / PUT | `/incidents/{id}/impact-area` | Read or create/update the incident's radius or GeoJSON polygon (MANAGEMENT/ADMIN) |
+| GET | `/incidents/{id}/resources` | Find nearby capability-matched resources (MANAGEMENT/ADMIN; optional `radius_m`, repeated `capability` and `status` query parameters) |
+| POST / PUT | `/resources`, `/resources/{id}` | Register or update a resource (ADMIN only) |
 | POST | `/incidents/{id}/plans` | Generate a needs-based plan draft from corrected/effective facts |
 | GET | `/response-plans/{id}` | Read a response-plan draft and decision |
 | POST | `/response-plans/{id}/approve` | Record human approval; does not execute dispatch |
@@ -132,10 +137,17 @@ Hook it up wherever you like (e.g. after `create_report`); the submission code d
 Note: the design docs list *pgvector* for similarity – FAISS was requested, so it is kept isolated and easy to swap.
 
 ### Incident and response-plan workflow
-Coordinator/admin flow: `SUBMITTED` → `UNDER_REVIEW` → `ACCEPTED` + confirmed incident (or `DISMISSED`) → generate `AWAITING_APPROVAL` plan → approve/reject. Plan generation snapshots `extraction.effective_facts`, emits deterministic review actions, and never invents department/resource IDs. Because there is no verified department/resource registry yet, candidate assignments remain empty and the plan reports the gap. Approval records actor, time, and reason only; it does not dispatch responders.
+Coordinator/admin flow: `SUBMITTED` → `UNDER_REVIEW` → `ACCEPTED` + confirmed incident (or `DISMISSED`) → generate `AWAITING_APPROVAL` plan → approve/reject. Plan generation snapshots `extraction.effective_facts`, emits deterministic review actions, and never invents department/resource IDs. Nearby registered resources are shown separately on the map and are not assigned to plan candidates. Approval records actor, time, and reason only; it does not dispatch responders.
+
+### Impact areas and support resources
+In the **Review** workspace, confirm a report first, then use its coordination map. The orange outlined/filled shape is the affected area; the incident marker and green resource markers are separate. Choose a radius in metres or paste a GeoJSON `Polygon` to save a zone. Coordinates use GeoJSON order `[longitude, latitude]`; the backend validates coordinate bounds, ring closure, non-zero area, and self-intersections. A missing area is allowed.
+
+The resources table is empty on a new install. Sign in as an `ADMIN` and use **Register a support resource** below a confirmed incident's map. Coordinates may be omitted (unlocated entries are kept in the registry but excluded from map results). Capabilities are comma-separated labels such as `RESCUE, MEDICAL_AID`; resource statuses are `AVAILABLE`, `BUSY`, `DEPLOYED`, and `UNAVAILABLE`. By default the nearby search returns `AVAILABLE` resources within 50,000 metres that match the incident's requested assistance, hazards, or built-in disaster-type capability aliases, ranked by capability matches and then distance. `RESOURCE_SEARCH_RADIUS_METRES` sets the default search distance; `RESOURCE_MAX_SEARCH_RADIUS_METRES` caps API requests. `IMPACT_MAX_RADIUS_METRES` (default 100,000) caps saved radius areas.
+
+Distance is calculated server-side with the Haversine formula; no PostGIS or other spatial extension is required. This project currently creates tables with SQLAlchemy `create_all()` at startup (no Alembic migration system). Starting the backend creates the two new tables in the configured database without altering the existing incident/report tables. Back up a production database before deploying any schema change.
 
 ### Notes for teammates
 - **Auth/RBAC:** Report and import endpoints require a signed session. `USER` accounts can view their own reports; `MANAGEMENT` and `ADMIN` can view all submitted reports. Incident review and plan-decision endpoints are coordinator/admin-only.
 - **Local demo accounts:** Configure `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` in the ignored `backend/.env`. Never commit that file or reuse demo passwords in production. Set `AUTH_COOKIE_SECURE=true` behind HTTPS.
 - **Schema:** tables are created by `init_db()` for dev; move to Alembic and add the `submitted_by` foreign key to `users.id`.
-- **Not done here (other owners):** department/resource registry and matching, priority scoring, PostGIS, plan execution/dispatch, video upload, `/reports/my`, and downstream operational workflows that consume approved plans.
+- **Not done here (other owners):** department linkage, verified resource ownership/availability synchronization, priority scoring, PostGIS, plan execution/dispatch, video upload, `/reports/my`, and downstream operational workflows that consume approved plans.

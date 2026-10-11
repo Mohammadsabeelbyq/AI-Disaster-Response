@@ -23,6 +23,8 @@ class Incident(Base):
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
 
     report: Mapped["IncidentReport"] = relationship(back_populates="incident")
+    impact_area: Mapped["ImpactArea | None"] = relationship(
+        back_populates="incident", cascade="all, delete-orphan", uselist=False)
     plans: Mapped[list["ResponsePlan"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan", order_by="ResponsePlan.version")
 

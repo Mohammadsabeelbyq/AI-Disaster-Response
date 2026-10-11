@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, ShieldAlert } from 'lucide-react';
+import IncidentOperationsMap from './IncidentOperationsMap.jsx';
 import {
   approveResponsePlan,
   confirmReport,
@@ -177,6 +178,8 @@ export default function ReviewPage() {
               </section>
 
               {incident && (
+                <>
+                <IncidentOperationsMap key={incident.id} incidentId={incident.id} report={selected} />
                 <section className="panel response-plan-panel">
                   <div className="panel-heading">
                     <div><span className="section-kicker">DOWNSTREAM WORKFLOW</span><h2>Response planning</h2></div>
@@ -209,6 +212,7 @@ export default function ReviewPage() {
                     </>
                   )}
                 </section>
+                </>
               )}
 
               <section className="panel extraction-panel">

@@ -1,11 +1,13 @@
 """Management-owned report review and human-supervised response planning APIs."""
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.database import get_db
+from app.schemas.impact_area import ImpactAreaCreate, ImpactAreaOut
+from app.schemas.resource import NearbyResourcesOut
 from app.models.user import User
 from app.schemas.report import (
     IncidentOut,
@@ -15,6 +17,7 @@ from app.schemas.report import (
     ResponsePlanOut,
 )
 from app.services import incident_service
+from app.services import impact_area_service, resource_service
 
 management_user = Depends(require_roles("MANAGEMENT", "ADMIN"))
 reports_router = APIRouter(tags=["incident-workflow"])
@@ -59,6 +62,31 @@ def list_incidents(db: Session = Depends(get_db), user: User = management_user):
 def get_incident(incident_id: uuid.UUID, db: Session = Depends(get_db),
                  user: User = management_user):
     return incident_service.get_incident(db, incident_id)
+
+
+@incidents_router.get("/{incident_id}/impact-area", response_model=ImpactAreaOut | None)
+def get_impact_area(incident_id: uuid.UUID, db: Session = Depends(get_db),
+                    user: User = management_user):
+    return impact_area_service.get_impact_area(db, incident_id)
+
+
+@incidents_router.put("/{incident_id}/impact-area", response_model=ImpactAreaOut)
+def save_impact_area(incident_id: uuid.UUID, data: ImpactAreaCreate,
+                     db: Session = Depends(get_db), user: User = management_user):
+    return impact_area_service.save_impact_area(db, incident_id, user.id, data)
+
+
+@incidents_router.get("/{incident_id}/resources", response_model=NearbyResourcesOut)
+def find_incident_resources(
+    incident_id: uuid.UUID,
+    radius_m: int | None = Query(default=None),
+    capability: list[str] | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return resource_service.find_nearby_resources(
+        db, incident_id, radius_m, capability, status)
 
 
 @incidents_router.post("/{incident_id}/plans", response_model=ResponsePlanOut, status_code=201)
