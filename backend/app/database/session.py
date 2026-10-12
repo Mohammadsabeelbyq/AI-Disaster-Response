@@ -29,6 +29,7 @@ def init_db() -> None:
     import app.models  # noqa: F401  (register models)
     Base.metadata.create_all(bind=engine)
     _upgrade_incident_columns(engine)
+    _upgrade_extraction_columns(engine)
 
 
 def _upgrade_incident_columns(bind) -> None:
@@ -65,3 +66,25 @@ def _upgrade_incident_columns(bind) -> None:
             connection.execute(text(
                 f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}"
             ))
+
+
+def _upgrade_extraction_columns(bind) -> None:
+    """Add traceability fields to extraction tables created by older app versions."""
+    from app.models.extraction import ReportExtraction
+
+    inspector = inspect(bind)
+    if "report_extractions" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("report_extractions")}
+    if "evidence_spans" in existing:
+        return
+
+    preparer = bind.dialect.identifier_preparer
+    table_name = preparer.quote("report_extractions")
+    column_name = preparer.quote("evidence_spans")
+    column_type = ReportExtraction.__table__.c.evidence_spans.type.compile(dialect=bind.dialect)
+    with bind.begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        ))

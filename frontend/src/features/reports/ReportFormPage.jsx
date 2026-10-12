@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ArrowRight, Check, ImagePlus, MapPin, Upload, X } from 'lucide-react';
 import { submitReport } from '../../api/reports.js';
 import LocationPicker from './LocationPicker.jsx';
+import { calculatePreliminaryPriority } from './priorityCalculation.js';
 
 const disasterTypes = [
   ['FLOOD', 'Flood'], ['FIRE', 'Fire'], ['EARTHQUAKE', 'Earthquake'], ['LANDSLIDE', 'Landslide'],
@@ -60,6 +61,7 @@ export default function ReportFormPage() {
 
   const extraction = submittedReport?.extraction;
   const extractedFacts = extraction?.effective_facts ?? extraction?.extracted_facts;
+  const preliminaryPriority = extractedFacts ? calculatePreliminaryPriority(extractedFacts, extraction?.confidence) : null;
   const evidenceItems = Object.entries(extraction?.evidence || {}).flatMap(
     ([field, phrases]) => phrases.map((text, index) => ({ field, text, index })),
   );
@@ -122,6 +124,45 @@ export default function ReportFormPage() {
                     ) : <p>No facts were identified; no values were inferred.</p>}
                   </details>
                   <p className="extraction-note">Automated suggestions only—not verified incident facts or an emergency dispatch decision.</p>
+                  {preliminaryPriority && (
+                    <div className="priority-review-card" style={{ marginTop: '14px' }}>
+                      <div className="priority-review-header">
+                        <div>
+                          <strong>Priority Assessment</strong>
+                          <span className="priority-review-rule"> · Deterministic Scoring (priority-v1)</span>
+                        </div>
+                        <span className="priority-advisory-tag">Advisory Triage</span>
+                      </div>
+                      <div className="priority-review-score-row">
+                        <span className={`priority-badge priority-badge--${preliminaryPriority.band.toLowerCase()}`}>
+                          {preliminaryPriority.band}
+                        </span>
+                        <strong className="priority-score-number">
+                          {preliminaryPriority.score} / 100
+                        </strong>
+                      </div>
+                      <div className="priority-factor-breakdown">
+                        <div className="priority-factor-title">Factor Contribution Breakdown</div>
+                        {Object.entries(preliminaryPriority.breakdown.risk_factors).map(([key, item]) => {
+                          const labels = {
+                            life_safety_risk: 'Life-safety risk',
+                            urgency: 'Urgency',
+                            affected_population: 'Affected population',
+                            hazard_level: 'Hazard level',
+                          };
+                          return (
+                            <div key={key} className="priority-factor-row">
+                              <span className="priority-factor-name">{labels[key] || key.replaceAll('_', ' ')}</span>
+                              <div className="priority-factor-bar-bg" title={`${Math.round(item.value * 100)}% input`}>
+                                <div className="priority-factor-bar-fill" style={{ width: `${Math.min(100, Math.max(0, item.value * 100))}%` }} />
+                              </div>
+                              <span className="priority-factor-pts">+{item.score_points.toFixed(1)} pts</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
                 </>
               ) : <p className="extraction-note">Text analysis could not be completed. Your report was saved and remains available for review.</p>}
             </section>

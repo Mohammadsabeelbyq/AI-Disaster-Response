@@ -248,35 +248,81 @@ export default function ReviewPage() {
                     <span className={`plan-status plan-status--${(plan?.status || incident.status).toLowerCase()}`}>{plan?.status || incident.status}</span>
                   </div>
 
-                  <div style={{ marginBottom: '1rem', padding: '0.9rem 1rem', border: '1px solid rgba(148, 163, 184, 0.4)', borderRadius: '0.75rem', background: 'rgba(15, 23, 42, 0.32)' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
-                      <strong>Priority classification</strong>
-                      <span style={{ fontSize: '0.82rem', opacity: 0.8 }}>Rule v{incident.priority_rule_version || 'default'}</span>
+                  <div className="priority-review-card">
+                    <div className="priority-review-header">
+                      <div>
+                        <strong>Priority Classification</strong>
+                        <span className="priority-review-rule"> · Rule {incident.priority_rule_version || 'v1'} ({incident.priority_algorithm_version || 'priority-v1'})</span>
+                      </div>
+                      <span className="priority-advisory-tag">Advisory · Human review required</span>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                      <span style={{ display: 'inline-flex', padding: '0.35rem 0.75rem', borderRadius: '999px', background: '#1d4ed8', color: '#fff', fontWeight: 700 }}>{incident.priority_band || 'LOW'}</span>
-                      <strong>{Math.round(incident.priority_score ?? 0)} / 100</strong>
+
+                    <div className="priority-review-score-row">
+                      <span className={`priority-badge priority-badge--${(incident.priority_band || 'LOW').toLowerCase()}`}>
+                        {incident.priority_band || 'LOW'}
+                      </span>
+                      <strong className="priority-score-number">
+                        {incident.priority_score != null ? `${Math.round(incident.priority_score)} / 100` : 'Not scored'}
+                      </strong>
                     </div>
+
+                    {incident.priority_breakdown?.risk_factors && Object.keys(incident.priority_breakdown.risk_factors).length > 0 && (
+                      <div className="priority-factor-breakdown">
+                        <div className="priority-factor-title">Contributing Factors Breakdown</div>
+                        {Object.entries(incident.priority_breakdown.risk_factors).map(([key, item]) => {
+                          const labels = {
+                            life_safety_risk: 'Life-safety risk',
+                            urgency: 'Urgency',
+                            affected_population: 'Affected population',
+                            hazard_level: 'Hazard level',
+                          };
+                          return (
+                            <div key={key} className="priority-factor-row">
+                              <span className="priority-factor-name">{labels[key] || key.replaceAll('_', ' ')}</span>
+                              <div className="priority-factor-bar-bg" title={`${Math.round(item.value * 100)}% input · ${(item.configured_weight * 100).toFixed(0)}% weight`}>
+                                <div className="priority-factor-bar-fill" style={{ width: `${Math.min(100, Math.max(0, item.value * 100))}%` }} />
+                              </div>
+                              <span className="priority-factor-pts">+{item.score_points.toFixed(1)} pts</span>
+                            </div>
+                          );
+                        })}
+                        {incident.priority_breakdown.confidence_adjustment && (
+                          <div className="priority-confidence-note">
+                            Confidence adjustment: {Math.round(incident.priority_breakdown.confidence_adjustment.mean_confidence * 100)}% confidence ({incident.priority_breakdown.confidence_adjustment.score_points.toFixed(1)} pts discount)
+                          </div>
+                        )}
+                      </div>
+                    )}
+
                     {incident.priority_is_overridden && (
-                      <p style={{ margin: '0.75rem 0 0', color: '#fbbf24' }}>
-                        Override reason: {incident.priority_override_reason || 'Not provided'}
+                      <p className="priority-override-notice">
+                        Overridden from calculated {incident.priority_original_band} ({Math.round(incident.priority_original_score ?? 0)}/100). Reason: {incident.priority_override_reason || 'Not provided'}
                       </p>
                     )}
-                    <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', marginTop: '0.9rem', flexWrap: 'wrap' }}>
-                      <input
-                        aria-label="Priority override reason"
-                        value={priorityReason}
-                        onChange={(event) => setPriorityReason(event.target.value)}
-                        placeholder="Override reason"
-                        style={{ flex: '1 1 200px', minWidth: '180px' }}
-                      />
-                      <select value={priorityBand} onChange={(event) => setPriorityBand(event.target.value)} aria-label="Override priority band" style={{ minWidth: '150px' }}>
-                        <option value="LOW">LOW</option>
-                        <option value="MEDIUM">MEDIUM</option>
-                        <option value="HIGH">HIGH</option>
-                        <option value="CRITICAL">CRITICAL</option>
-                      </select>
-                      <button className="button button--primary" type="button" onClick={applyPriorityOverride}>Apply override</button>
+
+                    <div className="priority-override-box">
+                      <small style={{ color: 'var(--color-muted)', fontSize: '9px', fontWeight: 600 }}>COORDINATOR OVERRIDE</small>
+                      <div className="priority-override-row">
+                        <input
+                          aria-label="Priority override reason"
+                          value={priorityReason}
+                          onChange={(event) => setPriorityReason(event.target.value)}
+                          placeholder="Override reason (required)"
+                        />
+                        <select
+                          value={priorityBand}
+                          onChange={(event) => setPriorityBand(event.target.value)}
+                          aria-label="Override priority band"
+                        >
+                          <option value="LOW">LOW</option>
+                          <option value="MEDIUM">MEDIUM</option>
+                          <option value="HIGH">HIGH</option>
+                          <option value="CRITICAL">CRITICAL</option>
+                        </select>
+                        <button className="button button--primary" type="button" onClick={applyPriorityOverride}>
+                          Apply override
+                        </button>
+                      </div>
                     </div>
                   </div>
 

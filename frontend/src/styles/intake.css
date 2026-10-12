@@ -264,6 +264,159 @@ button { color: inherit; }
 .review-loading, .review-empty { display: flex; min-height: 130px; align-items: center; justify-content: center; gap: 9px; color: var(--color-muted); font-size: 11px; }
 .review-empty { padding: 20px; }
 .review-layout + .notice { margin-bottom: 12px; }
+
+/* Coordinator Priority Review Card (Epic 4.1 & 4.2) */
+.priority-review-card {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.priority-review-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.priority-review-header strong {
+  font-size: 12px;
+  color: var(--color-ink);
+}
+.priority-review-rule {
+  font-size: 9px;
+  color: var(--color-muted);
+}
+.priority-review-score-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.priority-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+}
+.priority-badge--critical { background: var(--color-danger); color: #fff; }
+.priority-badge--high { background: var(--color-map); color: #fff; }
+.priority-badge--medium { background: var(--color-signal); color: var(--color-ink); }
+.priority-badge--low { background: var(--color-success); color: #fff; }
+
+.priority-score-number {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-ink);
+}
+.priority-advisory-tag {
+  display: inline-flex;
+  padding: 3px 8px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-alt);
+  color: var(--color-muted);
+  font-size: 9px;
+  font-weight: 600;
+}
+.priority-factor-breakdown {
+  display: grid;
+  gap: 7px;
+  margin: 10px 0;
+  padding: 11px 13px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-alt);
+  border: 1px solid var(--color-line);
+}
+.priority-factor-title {
+  margin: 0 0 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+}
+.priority-factor-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 65px;
+  align-items: center;
+  gap: 10px;
+  font-size: 10px;
+}
+.priority-factor-name {
+  color: var(--color-ink-soft);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.priority-factor-bar-bg {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-line);
+  overflow: hidden;
+}
+.priority-factor-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--color-brand);
+}
+.priority-factor-pts {
+  text-align: right;
+  font-weight: 700;
+  color: var(--color-ink);
+  font-size: 9px;
+}
+.priority-confidence-note {
+  margin: 4px 0 0;
+  color: var(--color-muted);
+  font-size: 9px;
+}
+.priority-override-box {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-line);
+}
+.priority-override-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.priority-override-row input {
+  flex: 1 1 180px;
+  min-width: 160px;
+  padding: 6px 9px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--color-ink);
+  font-size: 10px;
+}
+.priority-override-row select {
+  min-width: 120px;
+  padding: 6px 9px;
+  border: 1px solid var(--color-line-strong);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--color-ink);
+  font-size: 10px;
+}
+.priority-override-notice {
+  margin: 6px 0 0;
+  color: #b45309;
+  font-size: 9px;
+  font-weight: 600;
+}
+
 .priority-admin-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(270px, .8fr); gap: 16px; align-items: start; }
 .priority-policy-form, .priority-active-panel, .priority-history-panel { min-width: 0; padding: 19px; }
 .priority-policy-form > .panel-heading { margin-bottom: 6px; }

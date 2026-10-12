@@ -22,6 +22,7 @@ class ReportExtraction(Base):
     extracted_facts: Mapped[dict] = mapped_column(JSON, nullable=False)
     confidence: Mapped[dict] = mapped_column(JSON, nullable=False)
     evidence: Mapped[dict] = mapped_column(JSON, nullable=False)
+    evidence_spans: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     image_analysis_status: Mapped[str] = mapped_column(String(30), nullable=False)
     image_cues: Mapped[list | None] = mapped_column(JSON)
     corrected_facts: Mapped[dict | None] = mapped_column(JSON)
