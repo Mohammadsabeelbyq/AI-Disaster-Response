@@ -76,6 +76,14 @@ class ExtractionReviewOut(BaseModel):
         return value
 
 
+class EvidenceSpan(BaseModel):
+    fact: str | int
+    text: str
+    source: Literal["description", "disaster_type", "location_name"]
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+
 class ExtractionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     extractor_version: str
@@ -84,11 +92,17 @@ class ExtractionOut(BaseModel):
     effective_facts: ExtractedFacts
     confidence: dict[str, float]
     evidence: dict[str, list[str]]
+    evidence_spans: dict[str, list[EvidenceSpan]] = Field(default_factory=dict)
     image_analysis_status: str
     image_cues: list[dict] | None
     reviewed_by: uuid.UUID | None
     reviewed_at: datetime | None
     reviews: list[ExtractionReviewOut]
+
+    @field_validator("evidence_spans", mode="before")
+    @classmethod
+    def _empty_legacy_evidence_spans(cls, value):
+        return value or {}
 
     @field_validator("reviewed_at", mode="before")
     @classmethod
@@ -177,15 +191,19 @@ class IncidentOut(BaseModel):
     priority_score: float | None = None
     priority_band: str | None = None
     priority_rule_version: str | None = None
+    priority_algorithm_version: str | None = None
     priority_factors: dict[str, float] | None = None
+    priority_breakdown: dict | None = None
+    priority_is_advisory: bool = True
     priority_is_overridden: bool = False
     priority_original_score: float | None = None
     priority_original_band: str | None = None
     priority_override_reason: str | None = None
     priority_override_by: uuid.UUID | None = None
     priority_override_at: datetime | None = None
+    priority_calculated_at: datetime | None = None
 
-    @field_validator("confirmed_at", "priority_override_at", mode="before")
+    @field_validator("confirmed_at", "priority_override_at", "priority_calculated_at", mode="before")
     @classmethod
     def _ensure_utc_datetime(cls, value):
         if isinstance(value, datetime) and value.tzinfo is None:

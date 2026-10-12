@@ -12,8 +12,7 @@ from app.schemas.report import ExtractedFacts
 
 log = logging.getLogger(__name__)
 EXTRACTOR_VERSION = "rules-v2-resnet50"
-_MODEL_PATH = Path(__file__).resolve().parents[3] / "weights" / "model.weights.h5"
-_MODEL_CONFIG_PATH = _MODEL_PATH.with_name("config.json")
+_MODEL_PATH = Path(__file__).resolve().parents[3] / "weights" / "disaster_model.keras"
 _CLASS_LABELS = (
     "Damaged_Infrastructure", "Fire_Disaster", "Human_Damage",
     "Land_Disaster", "Non_Damage", "Water_Disaster",
@@ -123,11 +122,11 @@ def _load_classifier():
     from tensorflow import keras
     from tensorflow.keras.applications.resnet50 import preprocess_input
 
-    config = json.loads(_MODEL_CONFIG_PATH.read_text(encoding="utf-8"))
-    model = keras.models.model_from_json(
-        json.dumps(config), custom_objects={"preprocess_input": preprocess_input})
-    model.load_weights(_MODEL_PATH)
-    return model
+    return keras.models.load_model(
+        _MODEL_PATH,
+        custom_objects={"preprocess_input": preprocess_input},
+        compile=False,
+    )
 
 
 def analyze_image(data: bytes, mime_type: str) -> tuple[str, list[dict] | None]:

@@ -15,6 +15,8 @@ from collections.abc import Mapping
 
 from app.services.errors import ValidationFailed
 
+PRIORITY_ALGORITHM_VERSION = "priority-v1"
+
 DEFAULT_PRIORITY_WEIGHTS = {
     "life_safety_risk": 0.35,
     "urgency": 0.25,
@@ -103,11 +105,12 @@ def validate_priority_thresholds(thresholds: Mapping) -> dict[str, float]:
     return values
 
 
-def _valid_confidence(confidence: object) -> list[float]:
+def _valid_confidence(confidence: object, relevant_fields: set[str]) -> list[float]:
     if not isinstance(confidence, Mapping):
         return []
     values = []
-    for value in confidence.values():
+    for field in sorted(relevant_fields):
+        value = confidence.get(field)
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             continue
         try:
@@ -123,14 +126,15 @@ def calculate_priority_score(
     facts: Mapping | None,
     confidence: Mapping | None = None,
     weights: Mapping | None = None,
-) -> tuple[float | None, dict[str, float]]:
-    """Return a reproducible score and normalized factor values from known evidence."""
+) -> tuple[float | None, dict[str, float], dict]:
+    """Return the score, normalized factor values, and an auditable contribution breakdown."""
     weights = validate_priority_weights(
         DEFAULT_PRIORITY_WEIGHTS if weights is None else weights
     )
     facts = facts if isinstance(facts, Mapping) else {}
     factors: dict[str, float] = {}
 
+    factor_confidence_sources: dict[str, set[str]] = {}
     severity_cues = facts.get("severity_cues")
     if isinstance(severity_cues, (list, tuple, set)):
         scores = [
@@ -140,47 +144,89 @@ def calculate_priority_score(
         ]
         if scores:
             factors["life_safety_risk"] = max(scores)
+            factor_confidence_sources["life_safety_risk"] = {"severity_cues"}
 
     urgency = facts.get("urgency")
     if isinstance(urgency, str) and urgency.strip().upper() in _URGENCY_SCORES:
         factors["urgency"] = _URGENCY_SCORES[urgency.strip().upper()]
+        factor_confidence_sources["urgency"] = {"urgency"}
 
     population = facts.get("affected_persons")
     if isinstance(population, int) and not isinstance(population, bool) and population >= 0:
         factors["affected_population"] = min(1.0, population / 25.0) if population < 25 else 1.0
+        factor_confidence_sources["affected_population"] = {"affected_persons"}
     elif isinstance(population, float) and math.isfinite(population) and population >= 0:
         factors["affected_population"] = min(1.0, population / 25.0)
+        factor_confidence_sources["affected_population"] = {"affected_persons"}
 
     hazard_values: list[float] = []
+    hazard_confidence_sources: set[str] = set()
     hazards = facts.get("hazards")
     if isinstance(hazards, (list, tuple, set)):
-        hazard_values.extend(
-            _HAZARD_SCORES[str(hazard).strip().upper()]
-            for hazard in hazards
-            if isinstance(hazard, str) and str(hazard).strip().upper() in _HAZARD_SCORES
-        )
+        for hazard in hazards:
+            if isinstance(hazard, str) and str(hazard).strip().upper() in _HAZARD_SCORES:
+                hazard_values.append(_HAZARD_SCORES[str(hazard).strip().upper()])
+                hazard_confidence_sources.add("hazards")
     category = facts.get("incident_category")
     if isinstance(category, str) and category.strip().upper() in _CATEGORY_HAZARD_SCORES:
         hazard_values.append(_CATEGORY_HAZARD_SCORES[category.strip().upper()])
+        hazard_confidence_sources.add("incident_category")
     if hazard_values:
         factors["hazard_level"] = max(hazard_values)
+        factor_confidence_sources["hazard_level"] = hazard_confidence_sources
 
     if not factors:
-        return None, {}
+        return None, {}, {}
 
     available_weight = sum(weights[name] for name in factors)
     if available_weight <= 0:
-        return None, {}
+        return None, {}, {}
     base_score = sum(weights[name] * factors[name] for name in factors) / available_weight
 
-    confidence_values = _valid_confidence(confidence)
+    relevant_confidence_fields = set().union(*(
+        factor_confidence_sources[name] for name in factor_confidence_sources
+    ))
+    confidence_values = _valid_confidence(confidence, relevant_confidence_fields)
+    confidence_multiplier = 1.0
+    mean_confidence = None
     if confidence_values:
         mean_confidence = sum(confidence_values) / len(confidence_values)
         factors["evidence_confidence"] = mean_confidence
         confidence_weight = weights["evidence_confidence"]
-        base_score *= 1.0 - confidence_weight * (1.0 - mean_confidence)
+        confidence_multiplier = 1.0 - confidence_weight * (1.0 - mean_confidence)
 
-    return round(max(0.0, min(100.0, base_score * 100.0)), 2), factors
+    base_score_points = base_score * 100.0
+    risk_breakdown = {
+        name: {
+            "value": factors[name],
+            "configured_weight": weights[name],
+            "normalized_weight": weights[name] / available_weight,
+            "score_points_before_confidence": (
+                100.0 * weights[name] / available_weight * factors[name]
+            ),
+            "score_points": (
+                100.0 * weights[name] / available_weight * factors[name]
+                * confidence_multiplier
+            ),
+        }
+        for name in factor_confidence_sources
+    }
+    breakdown = {
+        "risk_factors": risk_breakdown,
+        "base_score": round(base_score_points, 4),
+        "confidence_adjustment": None,
+    }
+    if mean_confidence is not None:
+        breakdown["confidence_adjustment"] = {
+            "mean_confidence": mean_confidence,
+            "configured_weight": weights["evidence_confidence"],
+            "multiplier": confidence_multiplier,
+            "score_points": base_score_points * (confidence_multiplier - 1.0),
+        }
+    score = round(max(0.0, min(100.0, base_score_points * confidence_multiplier)), 2)
+    breakdown["final_score"] = score
+
+    return score, factors, breakdown
 
 
 def classify_priority(score: float | None, thresholds: Mapping | None = None) -> str | None:

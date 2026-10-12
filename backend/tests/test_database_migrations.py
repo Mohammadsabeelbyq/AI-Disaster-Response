@@ -1,6 +1,6 @@
 from sqlalchemy import create_engine, inspect, text
 
-from app.database.session import _upgrade_incident_columns
+from app.database.session import _upgrade_extraction_columns, _upgrade_incident_columns
 from app.models.incident import Incident
 
 
@@ -26,5 +26,22 @@ def test_upgrade_adds_priority_columns_to_legacy_incidents_table():
                 "SELECT priority_is_overridden FROM incidents"
             ))
             assert result.keys() == ["priority_is_overridden"]
+    finally:
+        test_engine.dispose()
+
+
+def test_upgrade_adds_evidence_spans_to_legacy_extractions_table():
+    test_engine = create_engine("sqlite:///:memory:")
+    try:
+        with test_engine.begin() as connection:
+            connection.execute(text(
+                "CREATE TABLE report_extractions (id CHAR(32) PRIMARY KEY, "
+                "report_id CHAR(32) NOT NULL UNIQUE)"
+            ))
+
+        _upgrade_extraction_columns(test_engine)
+
+        columns = {column["name"] for column in inspect(test_engine).get_columns("report_extractions")}
+        assert "evidence_spans" in columns
     finally:
         test_engine.dispose()

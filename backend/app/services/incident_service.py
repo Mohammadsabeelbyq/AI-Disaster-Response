@@ -13,6 +13,7 @@ from app.services.priority_service import (
     DEFAULT_PRIORITY_THRESHOLDS,
     DEFAULT_PRIORITY_WEIGHTS,
     PRIORITY_BANDS,
+    PRIORITY_ALGORITHM_VERSION,
     calculate_priority_score,
     classify_priority,
     validate_priority_thresholds,
@@ -116,7 +117,7 @@ def calculate_priority_for_incident(db: Session, incident: Incident) -> Incident
     config = get_active_priority_config(db, created_by=incident.confirmed_by)
     extraction = incident.report.extraction if incident.report else None
     facts = dict(extraction.effective_facts) if extraction else {}
-    score, factors = calculate_priority_score(
+    score, factors, breakdown = calculate_priority_score(
         facts,
         getattr(extraction, "confidence", None) if extraction else None,
         config.weights,
@@ -124,7 +125,9 @@ def calculate_priority_for_incident(db: Session, incident: Incident) -> Incident
     incident.priority_score = score
     incident.priority_band = classify_priority(score, config.thresholds)
     incident.priority_rule_version = config.version
+    incident.priority_algorithm_version = PRIORITY_ALGORITHM_VERSION
     incident.priority_factors = factors
+    incident.priority_breakdown = breakdown
     incident.priority_calculated_at = datetime.now(timezone.utc)
     if score is not None and incident.priority_original_score is None:
         incident.priority_original_score = score

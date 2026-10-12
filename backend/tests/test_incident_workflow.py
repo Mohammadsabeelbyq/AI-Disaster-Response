@@ -103,6 +103,7 @@ def test_dismissed_report_cannot_be_confirmed_or_planned(client, valid_form):
 
 
 def test_admin_can_manage_priority_configuration_and_rule_versioning(client, valid_form):
+    valid_form["description"] = "Flood water is rising; 12 people are trapped and need rescue."
     report = client.post("/reports", data=valid_form).json()
     client.post("/auth/logout")
     admin_login = client.post("/auth/login", json={
@@ -135,8 +136,7 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     assert priority['priority_rule_version'] == config_body['version']
     assert priority['priority_score'] >= 0
     assert priority['priority_band'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'}
-    # Unknown urgency is omitted instead of fabricated as LOW/zero.
-    assert 'urgency' not in priority['priority_factors']
+    assert priority['priority_factors']['urgency'] == 1.0
     assert priority['priority_factors']['hazard_level'] >= 0
 
     next_config = client.post('/priority-configs', json={
@@ -147,7 +147,7 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
             'hazard_level': 0.2,
             'evidence_confidence': 0.2,
         },
-        'thresholds': {'CRITICAL': 90, 'HIGH': 70, 'MEDIUM': 40, 'LOW': 0},
+        'thresholds': {'CRITICAL': 90, 'HIGH': 80, 'MEDIUM': 40, 'LOW': 0},
         'notes': 'Updated policy version',
     })
     assert next_config.status_code == 201, next_config.text
@@ -163,6 +163,9 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     next_incident = client.post(f"/reports/{next_report['id']}/confirm").json()
     next_priority = client.get(f"/incidents/{next_incident['id']}/priority").json()
     assert next_priority['priority_rule_version'] == next_config.json()['version']
+    assert next_priority['priority_score'] != priority['priority_score']
+    assert priority['priority_band'] == 'CRITICAL'
+    assert next_priority['priority_band'] == 'HIGH'
 
     invalid = client.post('/priority-configs', json={
         'weights': {'life_safety_risk': 0.6, 'urgency': 0.6},
@@ -188,6 +191,8 @@ def test_confirmed_incident_persists_advisory_score_classification_and_factors(c
 
     valid_form["description"] = "Flood water is rising; 12 people are trapped and need rescue."
     report = client.post("/reports", data=valid_form).json()
+    submitted_description = report["description"]
+    submitted_facts = report["extraction"]["extracted_facts"]
     assert _login_coordinator(client).status_code == 200
     assert client.post(f"/reports/{report['id']}/review").status_code == 200
 
@@ -199,19 +204,29 @@ def test_confirmed_incident_persists_advisory_score_classification_and_factors(c
     assert body["priority_factors"]["urgency"] == 1.0
     assert body["priority_factors"]["life_safety_risk"] == 1.0
     assert body["priority_rule_version"]
+    assert body["priority_algorithm_version"] == "priority-v1"
+    assert body["priority_breakdown"]["final_score"] == body["priority_score"]
+    assert body["priority_breakdown"]["risk_factors"]["urgency"]["score_points"] > 0
     assert body["priority_is_advisory"] is True
+    saved_report = client.get(f"/reports/{report['id']}").json()
+    assert saved_report["description"] == submitted_description
+    assert saved_report["extraction"]["extracted_facts"] == submitted_facts
 
     persisted = client.get(f"/incidents/{body['id']}/priority").json()
     assert persisted["priority_score"] == body["priority_score"]
     assert persisted["priority_band"] == body["priority_band"]
     assert persisted["priority_factors"] == body["priority_factors"]
     assert persisted["priority_rule_version"] == body["priority_rule_version"]
+    assert persisted["priority_algorithm_version"] == body["priority_algorithm_version"]
+    assert persisted["priority_breakdown"] == body["priority_breakdown"]
     with SessionLocal() as db:
         stored = db.get(Incident, uuid.UUID(body["id"]))
         assert stored.priority_score == body["priority_score"]
         assert stored.priority_band == body["priority_band"]
         assert stored.priority_factors == body["priority_factors"]
         assert stored.priority_rule_version == body["priority_rule_version"]
+        assert stored.priority_algorithm_version == body["priority_algorithm_version"]
+        assert stored.priority_breakdown == body["priority_breakdown"]
         assert stored.priority_calculated_at is not None
 
 
