@@ -38,6 +38,7 @@ class Incident(Base):
     priority_band: Mapped[str | None] = mapped_column(String(20), nullable=True)
     priority_rule_version: Mapped[str | None] = mapped_column(String(40), nullable=True)
     priority_factors: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    priority_explanation: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     priority_is_overridden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     priority_original_score: Mapped[float | None] = mapped_column(Float, nullable=True)
     priority_original_band: Mapped[str | None] = mapped_column(String(20), nullable=True)

@@ -30,6 +30,15 @@ const factLabels = {
   location_mentions: 'Location mentions',
 };
 
+const priorityFactorLabels = {
+  life_safety_risk: 'Life-safety risk',
+  urgency: 'Urgency',
+  affected_population: 'Affected population',
+  hazard_level: 'Hazard level',
+  evidence_confidence: 'Evidence confidence',
+};
+const priorityBandOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+
 function formatFactValue(value) {
   if (value == null) return 'Unknown';
   if (Array.isArray(value)) return value.length ? value.join(', ') : 'Unknown';
@@ -257,6 +266,42 @@ export default function ReviewPage() {
                       <span style={{ display: 'inline-flex', padding: '0.35rem 0.75rem', borderRadius: '999px', background: '#1d4ed8', color: '#fff', fontWeight: 700 }}>{incident.priority_band || 'LOW'}</span>
                       <strong>{Math.round(incident.priority_score ?? 0)} / 100</strong>
                     </div>
+                    {incident.priority_explanation ? (
+                      <div className="priority-explanation">
+                        <h3>Calculated score breakdown</h3>
+                        <p>Each factor value is multiplied by its rule weight; contributions are added and the total is capped at 100.</p>
+                        <dl className="priority-explanation__factors">
+                          {Object.entries(incident.priority_explanation.factors).map(([key, factor]) => (
+                            <div key={key}>
+                              <dt>{priorityFactorLabels[key] || key.replaceAll('_', ' ')}</dt>
+                              <dd>
+                                <span>Value {Number(factor.value).toFixed(2)}</span>
+                                <span>Weight {(Number(factor.weight) * 100).toFixed(2)}%</span>
+                                <strong>+{Number(factor.contribution).toFixed(1)} points</strong>
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <div className="priority-explanation__result">
+                          <span>Weighted total {Number(incident.priority_explanation.weighted_total).toFixed(1)}</span>
+                          <span>Calculated {incident.priority_explanation.calculated_band} · {Number(incident.priority_explanation.calculated_score).toFixed(1)}/100</span>
+                        </div>
+                        <p className="priority-explanation__thresholds">
+                          Band thresholds: {priorityBandOrder
+                            .map((band) => `${band} ≥ ${Number(incident.priority_explanation.thresholds[band]).toFixed(0)}`)
+                            .join(' · ')}
+                        </p>
+                        {incident.priority_is_overridden && (
+                          <p className="priority-explanation__override">
+                            The final priority above is overridden; this breakdown shows the original calculated classification.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="priority-explanation__unavailable">
+                        A factor breakdown is not available for this previously calculated incident.
+                      </p>
+                    )}
                     {incident.priority_is_overridden && (
                       <p style={{ margin: '0.75rem 0 0', color: '#fbbf24' }}>
                         Override reason: {incident.priority_override_reason || 'Not provided'}

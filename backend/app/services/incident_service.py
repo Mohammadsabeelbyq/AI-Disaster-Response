@@ -178,19 +178,29 @@ def calculate_priority_for_incident(db: Session, incident: Incident) -> Incident
         "evidence_confidence": evidence_score,
     }
 
-    score = (
-        config.weights.get("life_safety_risk", 0.0) * factors["life_safety_risk"]
-        + config.weights.get("urgency", 0.0) * factors["urgency"]
-        + config.weights.get("affected_population", 0.0) * factors["affected_population"]
-        + config.weights.get("hazard_level", 0.0) * factors["hazard_level"]
-        + config.weights.get("evidence_confidence", 0.0) * factors["evidence_confidence"]
-    ) * 100.0
-    score = max(0.0, min(100.0, score))
+    explained_factors = {
+        key: {
+            "value": value,
+            "weight": config.weights[key],
+            "contribution": config.weights[key] * value * 100.0,
+        }
+        for key, value in factors.items()
+    }
+    weighted_total = sum(item["contribution"] for item in explained_factors.values())
+    score = max(0.0, min(100.0, weighted_total))
+    band = _band_from_score(score, config.thresholds)
 
     incident.priority_score = score
-    incident.priority_band = _band_from_score(score, config.thresholds)
+    incident.priority_band = band
     incident.priority_rule_version = config.version
     incident.priority_factors = factors
+    incident.priority_explanation = {
+        "factors": explained_factors,
+        "weighted_total": weighted_total,
+        "calculated_score": score,
+        "calculated_band": band,
+        "thresholds": dict(config.thresholds),
+    }
     incident.priority_calculated_at = datetime.now(timezone.utc)
     if incident.priority_original_score is None:
         incident.priority_original_score = score

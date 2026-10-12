@@ -136,6 +136,17 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     assert priority['priority_score'] >= 0
     assert priority['priority_band'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'}
     assert priority['priority_factors']['urgency'] >= 0
+    explanation = priority['priority_explanation']
+    assert explanation['calculated_score'] == priority['priority_score']
+    assert explanation['calculated_band'] == priority['priority_band']
+    assert explanation['thresholds'] == config_body['thresholds']
+    assert set(explanation['factors']) == set(config_body['weights'])
+    assert sum(factor['contribution'] for factor in explanation['factors'].values()) == explanation['weighted_total']
+    assert round(min(100, explanation['weighted_total']), 8) == round(priority['priority_score'], 8)
+    for name, factor in explanation['factors'].items():
+        assert factor['value'] == priority['priority_factors'][name]
+        assert factor['weight'] == config_body['weights'][name]
+        assert factor['contribution'] == factor['value'] * factor['weight'] * 100
 
     next_config = client.post('/priority-configs', json={
         'weights': {
@@ -155,6 +166,7 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     assert historical_priority['priority_rule_version'] == config_body['version']
     assert historical_priority['priority_score'] == priority['priority_score']
     assert historical_priority['priority_band'] == priority['priority_band']
+    assert historical_priority['priority_explanation'] == explanation
 
     next_report = client.post('/reports', data=valid_form).json()
     assert client.post(f"/reports/{next_report['id']}/review").status_code == 200
@@ -190,6 +202,7 @@ def test_coordinator_can_override_priority_with_reason_and_traceability(client, 
     assert final['priority_original_score'] == priority['priority_score']
     assert final['priority_original_band'] == priority['priority_band']
     assert final['priority_band'] in {'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'}
+    assert final['priority_explanation'] == priority['priority_explanation']
 
     missing_reason = client.post(f"/incidents/{incident['id']}/priority/override", json={"reason": "   "})
     assert missing_reason.status_code == 422

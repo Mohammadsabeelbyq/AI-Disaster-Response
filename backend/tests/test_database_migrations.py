@@ -23,8 +23,8 @@ def test_upgrade_adds_priority_columns_to_legacy_incidents_table():
 
         with test_engine.connect() as connection:
             result = connection.execute(text(
-                "SELECT priority_is_overridden FROM incidents"
+                "SELECT priority_is_overridden, priority_explanation FROM incidents"
             ))
-            assert result.keys() == ["priority_is_overridden"]
+            assert result.keys() == ["priority_is_overridden", "priority_explanation"]
     finally:
         test_engine.dispose()
