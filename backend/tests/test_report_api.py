@@ -22,6 +22,8 @@ def test_text_only_report_accepted(client, valid_form):
     assert r.status_code == 201
     body = r.json()
     assert body["id"] and body["submitted_at"] and body["status"] == "SUBMITTED"
+    assert body["latitude"] == float(valid_form["latitude"])
+    assert body["longitude"] == float(valid_form["longitude"])
     assert body["image"] is None
     assert body["submitted_at"].endswith("+00:00") or body["submitted_at"].endswith("Z")
     extraction = body["extraction"]
@@ -34,6 +36,8 @@ def test_text_only_report_accepted(client, valid_form):
     assert persisted["id"] == body["id"]
     assert persisted["submitted_at"] == body["submitted_at"]
     assert persisted["description"] == valid_form["description"]
+    assert persisted["latitude"] == float(valid_form["latitude"])
+    assert persisted["longitude"] == float(valid_form["longitude"])
 
 
 def test_text_extraction_leaves_unsupported_facts_unknown(client, valid_form):
@@ -121,6 +125,50 @@ def test_reporter_cannot_correct_extraction(client, valid_form):
     report_id = client.post("/reports", data=valid_form).json()["id"]
     response = client.patch(f"/reports/{report_id}/extraction", json={"facts": {}})
     assert response.status_code == 403
+
+
+def test_reporter_cannot_correct_location(client, valid_form):
+    report_id = client.post("/reports", data=valid_form).json()["id"]
+    response = client.patch(f"/reports/{report_id}/location", json={
+        "latitude": 12.5, "longitude": -45.25,
+    })
+    assert response.status_code == 403
+
+
+def test_coordinator_location_correction_preserves_source_and_records_audit(client, valid_form):
+    from uuid import UUID
+
+    from app.database import SessionLocal
+    from app.models.incident import WorkflowAudit
+
+    original = client.post("/reports", data=valid_form).json()
+    client.post("/auth/logout")
+    assert client.post("/auth/login", json={
+        "email": "coordinator@example.test", "password": "test-coordinator-password-123",
+        "role": "MANAGEMENT",
+    }).status_code == 200
+
+    corrected = client.patch(f"/reports/{original['id']}/location", json={
+        "latitude": 12.5, "longitude": -45.25, "location_name": "Corrected area",
+    })
+    assert corrected.status_code == 200
+    body = corrected.json()
+    assert body["latitude"] == 10.027
+    assert body["longitude"] == 76.308
+    assert body["location_correction"]["latitude"] == 12.5
+    assert body["location_correction"]["longitude"] == -45.25
+    assert body["location_correction"]["location_name"] == "Corrected area"
+
+    invalid = client.patch(f"/reports/{original['id']}/location", json={
+        "latitude": 91, "longitude": -45.25,
+    })
+    assert invalid.status_code == 422
+
+    with SessionLocal() as db:
+        event = db.query(WorkflowAudit).filter_by(
+            report_id=UUID(original["id"]), event_type="REPORT_LOCATION_CORRECTED").one()
+        assert event.details["before"]["latitude"] == 10.027
+        assert event.details["after"]["latitude"] == 12.5
 
 
 def test_existing_report_gets_extraction_backfilled(client, valid_form):

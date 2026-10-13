@@ -141,6 +141,27 @@ class PriorityOverrideInput(BaseModel):
     band: str | None = Field(default=None, pattern=r"^(LOW|MEDIUM|HIGH|CRITICAL)$")
 
 
+class ReportLocationCorrectionInput(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    location_name: str | None = Field(default=None, max_length=255)
+
+    @field_validator("location_name", mode="before")
+    @classmethod
+    def _blank_location_name_to_none(cls, value):
+        return value.strip() or None if isinstance(value, str) else value
+
+
+class ReportLocationCorrectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    latitude: float
+    longitude: float
+    location_name: str | None
+    corrected_by: uuid.UUID
+    corrected_at: datetime
+
+
 class IncidentSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -173,9 +194,9 @@ class IncidentReportSummaryOut(BaseModel):
     id: uuid.UUID
     disaster_type: str
     description: str
-    latitude: float
-    longitude: float
-    location_name: str | None
+    latitude: float = Field(validation_alias="map_latitude")
+    longitude: float = Field(validation_alias="map_longitude")
+    location_name: str | None = Field(validation_alias="map_location_name")
 
 
 class IncidentOut(BaseModel):
@@ -232,6 +253,7 @@ class ReportOut(BaseModel):
     image: MediaOut | None = None
     extraction: ExtractionOut | None = None
     incident: IncidentSummaryOut | None = None
+    location_correction: ReportLocationCorrectionOut | None = None
 
     @field_validator("submitted_at", mode="before")
     @classmethod

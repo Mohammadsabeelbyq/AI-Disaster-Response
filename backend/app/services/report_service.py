@@ -7,7 +7,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.models import IncidentMedia, IncidentReport, ReportStatus
+from app.models import IncidentMedia, IncidentReport, ReportLocationCorrection, ReportStatus
+from app.models.incident import WorkflowAudit
 from app.schemas.report import ReportCreate
 from app.services import extraction_service, media_service
 from app.services.errors import Conflict, NotFound, StorageFailure
@@ -76,6 +77,42 @@ def get_report(db: Session, report_id: uuid.UUID) -> IncidentReport:
     report = db.get(IncidentReport, report_id)
     if report is None:
         raise NotFound("Report not found.")
+    return report
+
+
+def correct_report_location(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID, *,
+                            latitude: float, longitude: float,
+                            location_name: str | None = None) -> IncidentReport:
+    report = get_report(db, report_id)
+    before = {
+        "latitude": float(report.map_latitude),
+        "longitude": float(report.map_longitude),
+        "location_name": report.map_location_name,
+    }
+    correction = report.location_correction
+    if correction is None:
+        correction = ReportLocationCorrection(report=report, corrected_by=actor_id)
+    correction.latitude = latitude
+    correction.longitude = longitude
+    correction.location_name = location_name.strip() if location_name else None
+    correction.corrected_by = actor_id
+    db.add(correction)
+    db.add(WorkflowAudit(
+        actor_id=actor_id,
+        event_type="REPORT_LOCATION_CORRECTED",
+        report_id=report.id,
+        incident_id=report.incident.id if report.incident else None,
+        details={
+            "before": before,
+            "after": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "location_name": correction.location_name,
+            },
+        },
+    ))
+    db.commit()
+    db.refresh(report)
     return report
 
 

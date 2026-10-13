@@ -294,6 +294,44 @@ def test_incident_list_includes_saved_report_location_and_latest_priority(client
     assert client.get("/incidents").json()[0]["priority_band"] == "CRITICAL"
 
 
+def test_incident_list_includes_valid_coordinates_without_location_name(client, valid_form):
+    form_without_place = {key: value for key, value in valid_form.items() if key != "location_name"}
+    report = client.post("/reports", data=form_without_place).json()
+    assert report["location_name"] is None
+    assert _login_coordinator(client).status_code == 200
+    assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    response = client.get("/incidents")
+    assert response.status_code == 200
+    mapped_incident = next(item for item in response.json() if item["id"] == incident["id"])
+    assert mapped_incident["report"]["latitude"] == 10.027
+    assert mapped_incident["report"]["longitude"] == 76.308
+    assert mapped_incident["report"]["location_name"] is None
+
+
+def test_saved_location_correction_moves_incident_map_coordinates(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    assert _login_coordinator(client).status_code == 200
+    assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    correction = client.patch(f"/reports/{report['id']}/location", json={
+        "latitude": -33.8688,
+        "longitude": 151.2093,
+        "location_name": "Sydney",
+    })
+    assert correction.status_code == 200
+    assert correction.json()["latitude"] == 10.027
+    assert correction.json()["longitude"] == 76.308
+
+    mapped = client.get("/incidents").json()
+    updated_incident = next(item for item in mapped if item["id"] == incident["id"])
+    assert updated_incident["report"]["latitude"] == -33.8688
+    assert updated_incident["report"]["longitude"] == 151.2093
+    assert updated_incident["report"]["location_name"] == "Sydney"
+
+
 def test_admin_can_review_confirm_generate_and_reject_plan(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     client.post("/auth/logout")

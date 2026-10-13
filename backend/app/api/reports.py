@@ -10,7 +10,13 @@ from app.api.deps import get_current_user, get_current_user_id, require_roles
 from app.config import get_settings
 from app.database import get_db
 from app.models.user import User
-from app.schemas.report import ExtractionCorrection, ImportSummary, ReportCreate, ReportOut
+from app.schemas.report import (
+    ExtractionCorrection,
+    ImportSummary,
+    ReportCreate,
+    ReportLocationCorrectionInput,
+    ReportOut,
+)
 from app.services import extraction_service, import_service, media_service, report_service
 from app.services.errors import ImageRejected, NotFound, ValidationFailed
 
@@ -93,6 +99,23 @@ def correct_report_extraction(
     db.commit()
     db.refresh(report)
     return report
+
+
+@router.patch("/{report_id}/location", response_model=ReportOut)
+def correct_report_location(
+    report_id: uuid.UUID,
+    correction: ReportLocationCorrectionInput,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("MANAGEMENT", "ADMIN")),
+):
+    return report_service.correct_report_location(
+        db,
+        report_id,
+        user.id,
+        latitude=correction.latitude,
+        longitude=correction.longitude,
+        location_name=correction.location_name,
+    )
 
 
 @router.post("/{report_id}/media", response_model=ReportOut, status_code=201)

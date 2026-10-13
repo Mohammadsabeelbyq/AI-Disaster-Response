@@ -242,7 +242,8 @@ def dismiss_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID,
 def list_incidents(db: Session) -> list[Incident]:
     return list(db.scalars(
         select(Incident).options(
-            joinedload(Incident.plans), joinedload(Incident.report)
+            joinedload(Incident.plans),
+            joinedload(Incident.report).joinedload(IncidentReport.location_correction),
         ).order_by(Incident.confirmed_at.desc())
     ).unique())
 
@@ -250,7 +251,8 @@ def list_incidents(db: Session) -> list[Incident]:
 def get_incident(db: Session, incident_id: uuid.UUID) -> Incident:
     incident = db.scalar(
         select(Incident).options(
-            joinedload(Incident.plans), joinedload(Incident.report)
+            joinedload(Incident.plans),
+            joinedload(Incident.report).joinedload(IncidentReport.location_correction),
         ).where(Incident.id == incident_id)
     )
     if incident is None:

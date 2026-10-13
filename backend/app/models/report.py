@@ -37,6 +37,22 @@ class IncidentReport(Base):
         back_populates="report", cascade="all, delete-orphan", uselist=False)
     incident: Mapped["Incident | None"] = relationship(
         back_populates="report", cascade="all, delete-orphan", uselist=False)
+    location_correction: Mapped["ReportLocationCorrection | None"] = relationship(
+        back_populates="report", cascade="all, delete-orphan", uselist=False)
+
+    @property
+    def map_latitude(self) -> float:
+        return self.location_correction.latitude if self.location_correction else self.latitude
+
+    @property
+    def map_longitude(self) -> float:
+        return self.location_correction.longitude if self.location_correction else self.longitude
+
+    @property
+    def map_location_name(self) -> str | None:
+        if self.location_correction:
+            return self.location_correction.location_name
+        return self.location_name
 
     @property
     def image(self) -> "IncidentMedia | None":
@@ -70,6 +86,21 @@ class IncidentMedia(Base):
     @property
     def url(self) -> str:
         return f"/reports/{self.report_id}/image"
+
+
+class ReportLocationCorrection(Base):
+    __tablename__ = "report_location_corrections"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    report_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("incident_reports.id", ondelete="CASCADE"), unique=True, nullable=False)
+    latitude: Mapped[float] = mapped_column(Numeric(9, 6, asdecimal=False), nullable=False)
+    longitude: Mapped[float] = mapped_column(Numeric(9, 6, asdecimal=False), nullable=False)
+    location_name: Mapped[str | None] = mapped_column(String(255))
+    corrected_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    corrected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+    report: Mapped[IncidentReport] = relationship(back_populates="location_correction")
 
 
 
