@@ -1,14 +1,22 @@
 """Report review, incident confirmation, and human-supervised response planning."""
 import uuid
 from datetime import datetime, timezone
+from typing import Callable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.config import get_settings
 from app.models.incident import Incident, IncidentPriorityOverride, PriorityRuleConfig, ResponsePlan, WorkflowAudit
+from app.models.resource import RegisteredResource
 from app.models.user import User
 from app.models.report import IncidentReport, ReportStatus
 from app.services.errors import Conflict, NotFound, ValidationFailed
+from app.services.resource_service import (
+    _distance_metres,
+    _incident_capabilities,
+    _normalise_capability,
+)
 from app.services.priority_service import (
     DEFAULT_PRIORITY_THRESHOLDS,
     DEFAULT_PRIORITY_WEIGHTS,
@@ -294,8 +302,202 @@ def _recommend_actions(facts: dict) -> tuple[list[str], list[str]]:
     return actions, requirements
 
 
-def generate_response_plan(db: Session, incident_id: uuid.UUID,
-                           actor_id: uuid.UUID) -> ResponsePlan:
+def get_assigned_resource_ids(db: Session, exclude_incident_id: uuid.UUID | None = None) -> set[str]:
+    """Find resource IDs already assigned to active or approved response plans for other incidents."""
+    query = select(ResponsePlan).where(ResponsePlan.status.in_(["APPROVED", "AWAITING_APPROVAL"]))
+    if exclude_incident_id is not None:
+        query = query.where(ResponsePlan.incident_id != exclude_incident_id)
+    active_plans = db.scalars(query).all()
+    assigned = set()
+    for plan in active_plans:
+        for cand in (plan.resource_candidates or []):
+            rid = cand.get("id") or cand.get("resource_id")
+            if rid:
+                assigned.add(str(rid))
+        if plan.response_option and isinstance(plan.response_option, dict):
+            for res in plan.response_option.get("resources", []):
+                rid = res.get("id") or res.get("resource_id")
+                if rid:
+                    assigned.add(str(rid))
+    return assigned
+
+
+def recheck_resource_availability(
+    db: Session,
+    candidate_ids: list[uuid.UUID],
+    exclude_incident_id: uuid.UUID | None = None,
+) -> tuple[list[RegisteredResource], list[uuid.UUID]]:
+    """
+    Recheck resource availability against the database before finalizing the plan.
+    Detects availability changes (status changed from AVAILABLE to UNAVAILABLE/BUSY or assigned elsewhere).
+    Returns (available_resources, dropped_ids).
+    """
+    db.expire_all()
+    assigned_ids = get_assigned_resource_ids(db, exclude_incident_id=exclude_incident_id)
+    available_resources = []
+    dropped_ids = []
+
+    for cid in candidate_ids:
+        res = db.get(RegisteredResource, cid)
+        if res is None:
+            dropped_ids.append(cid)
+            continue
+        if res.status.upper() != "AVAILABLE" or str(res.id) in assigned_ids:
+            dropped_ids.append(cid)
+            continue
+        available_resources.append(res)
+
+    return available_resources, dropped_ids
+
+
+def evaluate_grounded_resources(
+    db: Session,
+    incident: Incident,
+) -> tuple[list[tuple[RegisteredResource, int, list[str]]], list[str]]:
+    """
+    Evaluate registered database resources against incident constraints:
+    - capabilities (required incident capabilities from requested assistance, hazards, disaster type)
+    - location (within impact area radius / polygon if set, or default operational radius; exclude unlocated)
+    - availability (status == AVAILABLE, not UNAVAILABLE or INACTIVE)
+    - assignment status (exclude BUSY, DEPLOYED, ASSIGNED, or active in another plan)
+    Returns (candidate_matches, constraints_considered).
+    """
+    constraints_considered = [
+        "Required capability",
+        "Resource availability",
+        "Assignment status",
+        "Location",
+    ]
+
+    report = incident.report
+    if report.map_latitude is None or report.map_longitude is None:
+        return [], constraints_considered
+
+    report_lat = float(report.map_latitude)
+    report_lon = float(report.map_longitude)
+
+    settings = get_settings()
+    impact_area = getattr(incident, "impact_area", None)
+    if impact_area is not None and impact_area.radius_m:
+        search_radius = float(impact_area.radius_m)
+    else:
+        search_radius = float(settings.resource_search_radius_metres)
+
+    required_capabilities = _incident_capabilities(incident)
+    assigned_ids = get_assigned_resource_ids(db, exclude_incident_id=incident.id)
+
+    # Use only resources registered in the database - never invent resources
+    all_resources = list(db.scalars(select(RegisteredResource)).all())
+
+    candidates: list[tuple[RegisteredResource, int, list[str]]] = []
+    for res in all_resources:
+        # Exclude unavailable, already-assigned, inactive, busy, deployed
+        if res.status.upper() != "AVAILABLE":
+            continue
+        if str(res.id) in assigned_ids:
+            continue
+
+        # Exclude resources without coordinates or beyond search radius
+        if res.latitude is None or res.longitude is None:
+            continue
+        distance = _distance_metres(report_lat, report_lon, float(res.latitude), float(res.longitude))
+        if distance > search_radius:
+            continue
+
+        # Exclude resources with incompatible capabilities
+        res_caps = {
+            _normalise_capability(c)
+            for c in (res.capabilities or [])
+            if isinstance(c, str) and _normalise_capability(c)
+        }
+        matching = res_caps & set(required_capabilities)
+        if required_capabilities and not matching:
+            continue
+
+        candidates.append((res, distance, sorted(matching)))
+
+    candidates.sort(key=lambda item: (-len(item[2]), item[1], item[0].name.casefold()))
+    return candidates, constraints_considered
+
+
+def _build_grounded_response_data(
+    finalized_candidates: list[tuple[RegisteredResource, int, list[str]]],
+    required_capabilities: list[str],
+    search_radius: float,
+) -> tuple[list[dict], dict, str, list[dict]]:
+    """Build resource_candidates, response_option, rationale, and evidence for FR-28 and FR-29."""
+    if finalized_candidates:
+        resource_candidates = [
+            {
+                "id": str(res.id),
+                "resource_id": str(res.id),
+                "name": res.name,
+                "type": res.resource_type or "Unknown",
+                "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
+                "capabilities": res.capabilities,
+                "status": res.status,
+                "distance_m": dist,
+                "latitude": float(res.latitude) if res.latitude is not None else None,
+                "longitude": float(res.longitude) if res.longitude is not None else None,
+                "matching_capabilities": matching_caps,
+            }
+            for res, dist, matching_caps in finalized_candidates
+        ]
+
+        response_option = {
+            "resources": [
+                {
+                    "resource_id": str(res.id),
+                    "name": res.name,
+                    "type": res.resource_type or "Unknown",
+                    "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
+                    "capabilities": res.capabilities,
+                    "status": res.status.lower(),
+                    "distance_m": dist,
+                }
+                for res, dist, matching_caps in finalized_candidates
+            ]
+        }
+
+        reasons = [
+            f"'{res.name}' (type: {res.resource_type or 'Unknown'}) matches required capabilities ({', '.join(matching_caps)}) "
+            f"at distance {dist}m with verified AVAILABLE status"
+            for res, dist, matching_caps in finalized_candidates
+        ]
+        rationale = (
+            f"Recommended {len(finalized_candidates)} suitable resource(s) grounded in registered database records: "
+            + "; ".join(reasons)
+            + "."
+        )
+
+        evidence = [
+            {
+                "resource_id": str(res.id),
+                "facts": [
+                    f"Resource '{res.name}' exists in registered database (ID: {res.id}).",
+                    f"Operational availability verified (status: '{res.status}').",
+                    f"Capabilities {res.capabilities} match incident requirements: {matching_caps}.",
+                    f"Location verified: coordinates ({float(res.latitude):.4f}, {float(res.longitude):.4f}), distance is {dist} metres from incident (within constraint radius {int(search_radius)} metres).",
+                    f"Resource type: {res.resource_type}" if getattr(res, "resource_type", None) else "Resource type: Unknown (not registered in database record).",
+                ],
+            }
+            for res, dist, matching_caps in finalized_candidates
+        ]
+    else:
+        resource_candidates = []
+        response_option = {"resources": []}
+        rationale = "No suitable registered resources were found in the database matching the required capabilities, availability status, and location constraints."
+        evidence = []
+
+    return resource_candidates, response_option, rationale, evidence
+
+
+def generate_response_plan(
+    db: Session,
+    incident_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    pre_finalize_hook: Callable[[], None] | None = None,
+) -> ResponsePlan:
     incident = get_incident(db, incident_id)
     if incident.status not in {"CONFIRMED", "ACTIVE"}:
         raise Conflict("A response plan can only be generated for a confirmed or active incident.")
@@ -305,6 +507,54 @@ def generate_response_plan(db: Session, incident_id: uuid.UUID,
 
     facts = dict(extraction.effective_facts)
     actions, requirements = _recommend_actions(facts)
+
+    # 1. Grounding and Constraints Validation (FR-28)
+    candidates, constraints_considered = evaluate_grounded_resources(db, incident)
+
+    # 2. Hook for simulated concurrent status change testing
+    if pre_finalize_hook:
+        pre_finalize_hook()
+
+    # 3. Final validation: recheck resource availability before finalizing plan
+    candidate_ids = [res.id for res, _, _ in candidates]
+    available_resources, dropped_ids = recheck_resource_availability(
+        db, candidate_ids, exclude_incident_id=incident.id
+    )
+    available_id_set = {r.id for r in available_resources}
+    finalized_candidates = [
+        (res, dist, matching) for res, dist, matching in candidates
+        if res.id in available_id_set
+    ]
+
+    settings = get_settings()
+    impact_area = getattr(incident, "impact_area", None)
+    search_radius = (
+        float(impact_area.radius_m)
+        if impact_area is not None and impact_area.radius_m
+        else float(settings.resource_search_radius_metres)
+    )
+    required_capabilities = _incident_capabilities(incident)
+
+    # 4. Rationale and Inspectable Evidence (FR-29)
+    resource_candidates, response_option, rationale, evidence = _build_grounded_response_data(
+        finalized_candidates, required_capabilities, search_radius
+    )
+
+    if finalized_candidates:
+        covered = set()
+        for _, _, matching in finalized_candidates:
+            covered.update(matching)
+        unmet = set(required_capabilities) - covered
+        gaps = []
+        if unmet:
+            gaps.append(f"Unmet incident capability requirements: {', '.join(sorted(unmet))}.")
+        gaps.extend(requirements)
+    else:
+        gaps = [
+            "No suitable registered resources were found matching the required capabilities and location constraints; no specific responders are named or assigned.",
+            *requirements,
+        ]
+
     latest_version = db.scalar(
         select(func.max(ResponsePlan.version)).where(ResponsePlan.incident_id == incident.id)
     ) or 0
@@ -314,11 +564,12 @@ def generate_response_plan(db: Session, incident_id: uuid.UUID,
         status="AWAITING_APPROVAL",
         source_facts=facts,
         recommended_actions=actions,
-        resource_candidates=[],
-        gaps=[
-            "No verified department/resource registry is configured; no specific responders are named or assigned.",
-            *requirements,
-        ],
+        resource_candidates=resource_candidates,
+        response_option=response_option,
+        constraints_considered=constraints_considered,
+        rationale=rationale,
+        evidence=evidence,
+        gaps=gaps,
         human_approval_required=True,
         generated_by=actor_id,
     )
@@ -326,7 +577,8 @@ def generate_response_plan(db: Session, incident_id: uuid.UUID,
     db.flush()
     _audit(db, actor_id, "RESPONSE_PLAN_GENERATED", incident_id=incident.id,
            plan_id=plan.id, details={"version": plan.version, "status": plan.status,
-                                     "source_facts": facts})
+                                     "source_facts": facts,
+                                     "recommended_resource_count": len(resource_candidates)})
     db.commit()
     db.refresh(plan)
     return plan

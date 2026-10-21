@@ -30,6 +30,8 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
     _upgrade_incident_columns(engine)
     _upgrade_extraction_columns(engine)
+    _upgrade_response_plan_columns(engine)
+    _upgrade_resource_columns(engine)
 
 
 def _upgrade_incident_columns(bind) -> None:
@@ -84,6 +86,50 @@ def _upgrade_extraction_columns(bind) -> None:
     table_name = preparer.quote("report_extractions")
     column_name = preparer.quote("evidence_spans")
     column_type = ReportExtraction.__table__.c.evidence_spans.type.compile(dialect=bind.dialect)
+    with bind.begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        ))
+
+
+def _upgrade_response_plan_columns(bind) -> None:
+    """Add FR-28/29 grounding fields to response_plans if missing in older databases."""
+    from app.models.incident import ResponsePlan
+
+    inspector = inspect(bind)
+    if "response_plans" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("response_plans")}
+    preparer = bind.dialect.identifier_preparer
+    table_name = preparer.quote("response_plans")
+    with bind.begin() as connection:
+        for col_name in ("response_option", "constraints_considered", "rationale", "evidence"):
+            if col_name not in existing:
+                column = ResponsePlan.__table__.c[col_name]
+                col_quoted = preparer.quote(col_name)
+                col_type = column.type.compile(dialect=bind.dialect)
+                connection.execute(text(
+                    f"ALTER TABLE {table_name} ADD COLUMN {col_quoted} {col_type}"
+                ))
+
+
+def _upgrade_resource_columns(bind) -> None:
+    """Add resource_type to registered_resources if missing in older databases."""
+    from app.models.resource import RegisteredResource
+
+    inspector = inspect(bind)
+    if "registered_resources" not in inspector.get_table_names():
+        return
+
+    existing = {column["name"] for column in inspector.get_columns("registered_resources")}
+    if "resource_type" in existing:
+        return
+
+    preparer = bind.dialect.identifier_preparer
+    table_name = preparer.quote("registered_resources")
+    column_name = preparer.quote("resource_type")
+    column_type = RegisteredResource.__table__.c.resource_type.type.compile(dialect=bind.dialect)
     with bind.begin() as connection:
         connection.execute(text(
             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"

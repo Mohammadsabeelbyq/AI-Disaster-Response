@@ -178,7 +178,11 @@ class ResponsePlanOut(BaseModel):
     status: str
     source_facts: ExtractedFacts
     recommended_actions: list[str]
-    resource_candidates: list[dict]
+    resource_candidates: list[dict] = Field(default_factory=list)
+    response_option: dict | None = None
+    constraints_considered: list[str] = Field(default_factory=list)
+    rationale: str | None = None
+    evidence: list[dict] = Field(default_factory=list)
     gaps: list[str]
     human_approval_required: bool
     generated_by: uuid.UUID

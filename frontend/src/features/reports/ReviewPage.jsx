@@ -334,6 +334,58 @@ export default function ReviewPage() {
                   ) : (
                     <>
                       <div className="plan-source-facts"><strong>Facts used</strong><span>{Object.entries(plan.source_facts).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join(', ') : value ?? 'unknown'}`).join(' · ')}</span></div>
+                      
+                      {plan.rationale && (
+                        <div className="plan-rationale" style={{ marginTop: '12px', padding: '10px', background: 'var(--color-surface-subtle, #f8f9fa)', borderRadius: '6px', borderLeft: '3px solid #2b7256' }}>
+                          <strong style={{ display: 'block', fontSize: '11px', color: 'var(--color-ink-strong)' }}>Planner Rationale</strong>
+                          <span style={{ fontSize: '12px', color: 'var(--color-ink-soft)' }}>{plan.rationale}</span>
+                        </div>
+                      )}
+
+                      {plan.constraints_considered && plan.constraints_considered.length > 0 && (
+                        <div className="plan-constraints" style={{ marginTop: '10px', fontSize: '11px', color: 'var(--color-muted)' }}>
+                          <strong>Constraints Evaluated: </strong>{plan.constraints_considered.join(' · ')}
+                        </div>
+                      )}
+
+                      {plan.response_option && plan.response_option.resources && plan.response_option.resources.length > 0 && (
+                        <div className="plan-resources" style={{ marginTop: '12px' }}>
+                          <strong style={{ fontSize: '11px' }}>Recommended Registered Resources</strong>
+                          <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none', display: 'grid', gap: '8px' }}>
+                            {plan.response_option.resources.map((res) => (
+                              <li key={res.resource_id} style={{ padding: '8px', border: '1px solid var(--color-line)', borderRadius: '4px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <strong>{res.name}</strong>
+                                  <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: '#e1f5fe', color: '#0277bd', fontWeight: 600 }}>{res.status.toUpperCase()}</span>
+                                </div>
+                                <div style={{ fontSize: '11px', color: 'var(--color-muted)', marginTop: '2px' }}>
+                                  Type: {res.type || 'Unknown'} · Distance: {res.distance_m != null ? `${res.distance_m}m` : 'Unknown'}
+                                </div>
+                                <div style={{ fontSize: '10px', color: 'var(--color-ink-soft)', marginTop: '2px' }}>
+                                  Capabilities: {Array.isArray(res.capabilities) ? res.capabilities.join(', ') : res.capability}
+                                </div>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {plan.evidence && plan.evidence.length > 0 && (
+                        <div className="plan-evidence" style={{ marginTop: '12px', padding: '10px', background: '#f5f5f5', borderRadius: '6px' }}>
+                          <strong style={{ fontSize: '11px' }}>Inspectable Evidence Facts</strong>
+                          {plan.evidence.map((ev) => (
+                            <div key={ev.resource_id} style={{ marginTop: '6px' }}>
+                              <small style={{ fontWeight: 600, color: 'var(--color-muted)' }}>Resource ID: {ev.resource_id}</small>
+                              <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: '11px' }}>
+                                {ev.facts.map((fact, idx) => (
+                                  <li key={idx} style={{ marginBottom: '2px' }}>{fact}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
                       <div className="plan-action-list"><strong>Recommended coordinator actions</strong>{plan.recommended_actions.map((action) => <p key={action}>{action}</p>)}</div>
                       <div className="plan-gap"><ShieldAlert size={16} /><span>{plan.gaps.join(' ')}</span></div>
                       <p className="plan-safety-note">Approval records a human decision only. This prototype does not dispatch services or execute assignments.</p>

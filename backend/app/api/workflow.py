@@ -1,12 +1,14 @@
 """Management-owned report review and human-supervised response planning APIs."""
 import uuid
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
 from app.database import get_db
 from app.models.user import User
+from app.schemas.impact_area import ImpactAreaCreate, ImpactAreaOut
+from app.schemas.resource import NearbyResourcesOut
 from app.schemas.report import (
     IncidentOut,
     PriorityConfigInput,
@@ -18,6 +20,7 @@ from app.schemas.report import (
     ResponsePlanOut,
 )
 from app.services import incident_service
+from app.services import impact_area_service, resource_service
 
 management_user = Depends(require_roles("MANAGEMENT", "ADMIN"))
 reports_router = APIRouter(tags=["incident-workflow"])
@@ -65,6 +68,39 @@ def get_incident(incident_id: uuid.UUID, db: Session = Depends(get_db),
     return incident_service.get_incident(db, incident_id)
 
 
+@incidents_router.get("/{incident_id}/impact-area", response_model=ImpactAreaOut | None)
+def get_impact_area(
+    incident_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return impact_area_service.get_impact_area(db, incident_id)
+
+
+@incidents_router.put("/{incident_id}/impact-area", response_model=ImpactAreaOut)
+def save_impact_area(
+    incident_id: uuid.UUID,
+    data: ImpactAreaCreate,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return impact_area_service.save_impact_area(db, incident_id, user.id, data)
+
+
+@incidents_router.get("/{incident_id}/resources", response_model=NearbyResourcesOut)
+def find_incident_resources(
+    incident_id: uuid.UUID,
+    radius_m: int | None = Query(default=None),
+    capability: list[str] | None = Query(default=None),
+    status: list[str] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return resource_service.find_nearby_resources(
+        db, incident_id, radius_m, capability, status
+    )
+
+
 @incidents_router.get("/{incident_id}/priority", response_model=IncidentOut)
 def get_incident_priority(incident_id: uuid.UUID, db: Session = Depends(get_db),
                          user: User = management_user):
@@ -110,6 +146,43 @@ def create_priority_config(payload: PriorityConfigInput,
         thresholds=payload.thresholds,
         notes=payload.notes,
     )
+
+
+@incidents_router.get("/{incident_id}/recommendations")
+def get_incident_recommendations(
+    incident_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    incident = incident_service.get_incident(db, incident_id)
+    candidates, constraints_considered = incident_service.evaluate_grounded_resources(db, incident)
+    candidate_ids = [res.id for res, _, _ in candidates]
+    available_resources, _ = incident_service.recheck_resource_availability(
+        db, candidate_ids, exclude_incident_id=incident.id
+    )
+    available_id_set = {r.id for r in available_resources}
+    finalized = [(r, d, m) for r, d, m in candidates if r.id in available_id_set]
+
+    settings = incident_service.get_settings()
+    impact_area = getattr(incident, "impact_area", None)
+    search_radius = (
+        float(impact_area.radius_m)
+        if impact_area is not None and impact_area.radius_m
+        else float(settings.resource_search_radius_metres)
+    )
+    required_capabilities = incident_service._incident_capabilities(incident)
+
+    resource_candidates, response_option, rationale, evidence = incident_service._build_grounded_response_data(
+        finalized, required_capabilities, search_radius
+    )
+
+    return {
+        "incident_id": incident.id,
+        "response_option": response_option,
+        "constraints_considered": constraints_considered,
+        "rationale": rationale,
+        "evidence": evidence,
+    }
 
 
 @incidents_router.post("/{incident_id}/plans", response_model=ResponsePlanOut, status_code=201)

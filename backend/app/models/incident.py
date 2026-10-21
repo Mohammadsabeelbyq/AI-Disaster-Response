@@ -49,6 +49,8 @@ class Incident(Base):
     priority_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     report: Mapped["IncidentReport"] = relationship(back_populates="incident")
+    impact_area: Mapped["ImpactArea | None"] = relationship(
+        back_populates="incident", cascade="all, delete-orphan", uselist=False)
     plans: Mapped[list["ResponsePlan"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan", order_by="ResponsePlan.version")
 
@@ -79,6 +81,10 @@ class ResponsePlan(Base):
     source_facts: Mapped[dict] = mapped_column(JSON, nullable=False)
     recommended_actions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     resource_candidates: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
+    response_option: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    constraints_considered: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     gaps: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     human_approval_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     generated_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)

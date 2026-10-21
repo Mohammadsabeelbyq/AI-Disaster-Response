@@ -23,6 +23,9 @@ class Settings:
     upload_dir: Path
     max_image_bytes: int
     max_import_records: int
+    impact_max_radius_metres: int
+    resource_search_radius_metres: int
+    resource_max_search_radius_metres: int
     faiss_index_dir: Path
     embedding_model: str
     auth_secret_key: str | None
@@ -38,6 +41,10 @@ def get_settings() -> Settings:
         upload_dir=Path(os.getenv("UPLOAD_DIR", "../uploads")).resolve(),
         max_image_bytes=int(os.getenv("MAX_IMAGE_BYTES", 5 * 1024 * 1024)),
         max_import_records=int(os.getenv("MAX_IMPORT_RECORDS", 1000)),
+        impact_max_radius_metres=int(os.getenv("IMPACT_MAX_RADIUS_METRES", "100000")),
+        resource_search_radius_metres=int(os.getenv("RESOURCE_SEARCH_RADIUS_METRES", "50000")),
+        resource_max_search_radius_metres=int(
+            os.getenv("RESOURCE_MAX_SEARCH_RADIUS_METRES", "100000")),
         faiss_index_dir=Path(os.getenv("FAISS_INDEX_DIR", "../data/faiss")).resolve(),
         embedding_model=os.getenv(
             "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),
