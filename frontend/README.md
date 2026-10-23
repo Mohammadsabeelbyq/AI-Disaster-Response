@@ -33,10 +33,11 @@ To serve the production bundle from FastAPI, run `npm run build` and restart the
 - Report, media, and import endpoints require a valid session. `USER` can view their own submitted reports; `MANAGEMENT` and `ADMIN` can view all submitted reports.
 - Local demo accounts are provisioned from `backend/.env`. Never commit demo passwords or use them in production.
 - Web form (`/` or `/intake`) submits multipart data to `POST /reports`, including optional JPEG, PNG, or WebP evidence.
-- The form's Leaflet/OpenStreetMap location picker supports address search and reverse geocoding through public Nominatim, map clicks, draggable markers, coordinate/full Google Maps URL input, and browser geolocation. Coordinates and place name are map-populated form outputs.
+- The form's Leaflet/OpenStreetMap location picker supports direct latitude/longitude entry, address search and reverse geocoding through public Nominatim, map clicks, draggable markers, coordinate/full Google Maps URL input, and browser geolocation. Valid manually entered coordinates move the picker marker directly without requiring a place name.
 - Bulk import uses `POST /reports/import/json` or `/reports/import/csv` and displays each accepted/rejected row.
 - The coordinator Review workspace can move a report through review, confirm or dismiss it, inspect/correct extracted facts, generate a needs-based response-plan draft, and record an approve/reject decision.
-- The coordinator Incident map (`/incidents/map`) displays saved, located confirmed incidents with status and priority indicators, selectable incident details, and periodic refresh from the protected incident API.
+- Coordinators can detect potential report relationships using submission time and corrected map distance, optionally include semantic similarity, and confirm or reject proposals with recorded decisions; reports are never merged by this workflow.
+- The coordinator Incident map (`/incident-map`) displays saved, located confirmed incidents with status and priority indicators, selectable incident details, periodic refresh from the protected incident API, and coordinate-only lookup that places a temporary point without saving an incident.
 - Response plans use corrected/effective facts, require human approval, and explicitly show that no responder assignment or dispatch occurs because verified departments/resources are not yet registered.
 - `/report-form` remains an alias for the web form.
 - Dashboard, report history, department/resource management, and actual incident operations/dispatch are not implemented in this frontend slice.

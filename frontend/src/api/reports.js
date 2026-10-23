@@ -20,11 +20,37 @@ export function listReports() {
   return request('/reports?limit=200');
 }
 
+export function detectPotentialReportRelationships(reportId) {
+  return request(`/reports/${encodeURIComponent(reportId)}/potential-relationships`, {
+    method: 'POST',
+  });
+}
+
+export function listReportRelationships(status = 'PROPOSED') {
+  return request(`/report-relationships?status=${encodeURIComponent(status)}`);
+}
+
+export function decideReportRelationship(relationshipId, decision, reason = '') {
+  return request(`/report-relationships/${encodeURIComponent(relationshipId)}/${decision}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason: reason.trim() || null }),
+  });
+}
+
 export function correctExtraction(reportId, facts) {
   return request(`/reports/${reportId}/extraction`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ facts }),
+  });
+}
+
+export function correctReportLocation(reportId, location) {
+  return request(`/reports/${reportId}/location`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(location),
   });
 }
 

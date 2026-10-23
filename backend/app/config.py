@@ -26,6 +26,9 @@ class Settings:
     impact_max_radius_metres: int
     resource_search_radius_metres: int
     resource_max_search_radius_metres: int
+    report_relationship_time_window_hours: float
+    report_relationship_radius_km: float
+    semantic_report_matching_enabled: bool
     faiss_index_dir: Path
     embedding_model: str
     auth_secret_key: str | None
@@ -45,6 +48,13 @@ def get_settings() -> Settings:
         resource_search_radius_metres=int(os.getenv("RESOURCE_SEARCH_RADIUS_METRES", "50000")),
         resource_max_search_radius_metres=int(
             os.getenv("RESOURCE_MAX_SEARCH_RADIUS_METRES", "100000")),
+        report_relationship_time_window_hours=float(
+            os.getenv("REPORT_RELATIONSHIP_TIME_WINDOW_HOURS", "24")),
+        report_relationship_radius_km=float(
+            os.getenv("REPORT_RELATIONSHIP_RADIUS_KM", "25")),
+        semantic_report_matching_enabled=(
+            os.getenv("ENABLE_SEMANTIC_REPORT_MATCHING", "false").lower() == "true"
+        ),
         faiss_index_dir=Path(os.getenv("FAISS_INDEX_DIR", "../data/faiss")).resolve(),
         embedding_model=os.getenv(
             "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),

@@ -1,6 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseLocationInput } from './mapLocation.js';
+import { parseLocationInput, validateCoordinates } from './mapLocation.js';
+
+test('validates separate latitude and longitude values and geographic boundaries', () => {
+  assert.deepEqual(validateCoordinates('10.027', '76.308'), {
+    kind: 'coordinates', latitude: 10.027, longitude: 76.308,
+  });
+  assert.deepEqual(validateCoordinates('-90', '180'), {
+    kind: 'coordinates', latitude: -90, longitude: 180,
+  });
+  assert.deepEqual(validateCoordinates('90', '-180'), {
+    kind: 'coordinates', latitude: 90, longitude: -180,
+  });
+});
+
+test('rejects incomplete, non-numeric, and out-of-range coordinate fields', () => {
+  assert.match(validateCoordinates('10', '').message, /both latitude and longitude/);
+  assert.match(validateCoordinates(' ', '20').message, /both latitude and longitude/);
+  assert.match(validateCoordinates('north', '20').message, /valid numbers/);
+  assert.match(validateCoordinates('91', '20').message, /outside the valid/);
+  assert.match(validateCoordinates('10', '181').message, /outside the valid/);
+});
 
 test('parses pasted latitude and longitude', () => {
   assert.deepEqual(parseLocationInput('10.027, 76.308'), {

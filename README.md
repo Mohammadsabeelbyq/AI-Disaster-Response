@@ -56,6 +56,10 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | POST | `/reports/{id}/review` | Move a submitted report to `UNDER_REVIEW` (MANAGEMENT/ADMIN) |
 | POST | `/reports/{id}/confirm` | Confirm an under-review report and create an incident |
 | POST | `/reports/{id}/dismiss` | Dismiss an under-review report with an optional reason |
+| POST | `/reports/{id}/potential-relationships` | Detect and save time/location-based potential report links (MANAGEMENT/ADMIN) |
+| GET | `/report-relationships?status=PROPOSED` | List potential report links for coordinator review |
+| POST | `/report-relationships/{id}/confirm` | Confirm a relationship without merging reports |
+| POST | `/report-relationships/{id}/reject` | Reject a potential relationship and record the decision |
 | GET | `/incidents`, `/incidents/{id}` | List confirmed incidents and their plan history |
 | POST | `/incidents/{id}/plans` | Generate a needs-based plan draft from corrected/effective facts |
 | GET | `/response-plans/{id}` | Read a response-plan draft and decision |
@@ -80,6 +84,9 @@ The response also includes `extraction`: extracted facts, per-field confidence (
 
 ### Coordinator review (Epics 1.5 and 2.4–2.5)
 `MANAGEMENT` and `ADMIN` accounts can open the **Review** workspace to compare the original submission with extracted facts, evidence and confidence. Corrections are saved separately and retain before/after snapshots, actor and timestamp; the original description and first-pass extraction remain unchanged. The API is `PATCH /reports/{id}/extraction` with `{"facts": { ... }}`. Reporters receive `403` for correction attempts.
+
+### Potential report relationships
+Coordinators can run **Find potential matches** from the report review workspace. The detector proposes report pairs only when both their submission times and corrected map locations are within the configured windows. Default limits are 24 hours and 25 km; override them with `REPORT_RELATIONSHIP_TIME_WINDOW_HOURS` and `REPORT_RELATIONSHIP_RADIUS_KM`. Proposals retain the time and distance evidence used for detection. Semantic similarity is optional and off by default; enable it with `ENABLE_SEMANTIC_REPORT_MATCHING=true` and install the optional `numpy` and `sentence-transformers` packages. When enabled, the similarity score is shown as supporting evidence and does not silently decide or merge records. Coordinators confirm or reject each proposal; actor, timestamp and optional reason are recorded both on the relationship and in workflow audit history. Neither decision merges reports or creates incidents.
 
 ### Optional image understanding (Epic 2.3)
 The default is off and no external service is required for Epics 1, 2.1, 2.2, 2.4 or 2.5. To enable advisory image cues, set `ENABLE_IMAGE_ANALYSIS=true`, provide a Google Gemini API key as `GEMINI_API_KEY`, and optionally override `GEMINI_MODEL` (default `gemini-2.5-flash`). Only attached images are sent to Gemini. Each returned cue includes confidence and evidence text, and remains linked to the attached image. Calls have a timeout; failures are recorded as `FAILED` and do not reject a report. When enabled, image bytes leave this deployment, so configure this only after approving the provider and data-handling policy. No API key is needed from you for the rest of Epic 2.

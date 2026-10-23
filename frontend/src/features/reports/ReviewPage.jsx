@@ -4,14 +4,19 @@ import {
   approveResponsePlan,
   confirmReport,
   correctExtraction,
+  correctReportLocation,
+  decideReportRelationship,
+  detectPotentialReportRelationships,
   dismissReport,
   generateResponsePlan,
   getIncident,
   overrideIncidentPriority,
   listReports,
+  listReportRelationships,
   rejectResponsePlan,
   startReportReview,
 } from '../../api/reports.js';
+import { validateCoordinates } from './mapLocation.js';
 
 const fields = [
   ['severity_cues', 'Severity cues'],
@@ -41,12 +46,23 @@ function draftFrom(report) {
   return { ...(report.extraction.corrected_facts || report.extraction.extracted_facts) };
 }
 
+function locationDraftFrom(report) {
+  return {
+    latitude: String(report.location_correction?.latitude ?? report.latitude),
+    longitude: String(report.location_correction?.longitude ?? report.longitude),
+    location_name: report.location_correction?.location_name ?? report.location_name ?? '',
+  };
+}
+
 export default function ReviewPage() {
   const [reports, setReports] = useState([]);
+  const [relationships, setRelationships] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(null);
+  const [locationDraft, setLocationDraft] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [locationSaving, setLocationSaving] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [message, setMessage] = useState(null);
   const [incident, setIncident] = useState(null);
@@ -54,6 +70,8 @@ export default function ReviewPage() {
   const [decisionReason, setDecisionReason] = useState('');
   const [priorityReason, setPriorityReason] = useState('');
   const [priorityBand, setPriorityBand] = useState('HIGH');
+  const [relationshipBusy, setRelationshipBusy] = useState(false);
+  const [relationshipReason, setRelationshipReason] = useState('');
   const selected = reports.find((report) => report.id === selectedId) || null;
   const factRows = (selected?.extraction ? [
     'incident_category', 'urgency', 'affected_persons', 'severity_cues', 'hazards', 'requested_assistance', 'location_mentions',
@@ -85,9 +103,12 @@ export default function ReviewPage() {
       if (items.length) {
         setSelectedId(items[0].id);
         setDraft(draftFrom(items[0]));
+        setLocationDraft(locationDraftFrom(items[0]));
       }
     }).catch((error) => setMessage({ kind: 'error', text: error.message }))
       .finally(() => setLoading(false));
+    listReportRelationships().then(setRelationships)
+      .catch((error) => setMessage({ kind: 'error', text: error.message }));
   }, []);
 
   useEffect(() => {
@@ -108,6 +129,7 @@ export default function ReviewPage() {
   function selectReport(report) {
     setSelectedId(report.id);
     setDraft(draftFrom(report));
+    setLocationDraft(locationDraftFrom(report));
     setMessage(null);
   }
 
@@ -117,6 +139,40 @@ export default function ReviewPage() {
 
   function setValue(key, value) {
     setDraft((current) => ({ ...current, [key]: value }));
+  }
+
+  async function findPotentialRelationships() {
+    setRelationshipBusy(true);
+    setMessage(null);
+    try {
+      await detectPotentialReportRelationships(selectedId);
+      setRelationships(await listReportRelationships());
+      setMessage({ kind: 'success', text: 'Potential relationships refreshed. No reports were merged.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setRelationshipBusy(false);
+    }
+  }
+
+  async function decideRelationship(relationshipId, decision) {
+    setRelationshipBusy(true);
+    setMessage(null);
+    try {
+      const updated = await decideReportRelationship(relationshipId, decision, relationshipReason);
+      setRelationships((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setRelationshipReason('');
+      setMessage({
+        kind: 'success',
+        text: decision === 'confirm'
+          ? 'Relationship confirmed and recorded. The reports remain separate.'
+          : 'Potential relationship rejected and recorded.',
+      });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setRelationshipBusy(false);
+    }
   }
 
   async function saveCorrection(event) {
@@ -132,6 +188,35 @@ export default function ReviewPage() {
       setMessage({ kind: 'error', text: error.message });
     } finally {
       setSaving(false);
+    }
+  }
+
+  function updateLocationCoordinate(field, value) {
+    setLocationDraft((current) => ({ ...current, [field]: value, location_name: '' }));
+  }
+
+  async function saveLocationCorrection(event) {
+    event.preventDefault();
+    const coordinates = validateCoordinates(locationDraft.latitude, locationDraft.longitude);
+    if (coordinates.kind === 'error') {
+      setMessage({ kind: 'error', text: coordinates.message });
+      return;
+    }
+
+    setLocationSaving(true);
+    setMessage(null);
+    try {
+      const updated = await correctReportLocation(selectedId, {
+        ...coordinates,
+        location_name: locationDraft.location_name.trim() || null,
+      });
+      updateReport(updated);
+      setLocationDraft(locationDraftFrom(updated));
+      setMessage({ kind: 'success', text: 'Map location saved. The original submitted coordinates are preserved.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setLocationSaving(false);
     }
   }
 
@@ -218,12 +303,30 @@ export default function ReviewPage() {
             ))}
           </aside>
 
-          {selected && draft && (
+          {selected && draft && locationDraft && (
             <div className="review-detail">
               <section className="panel source-panel">
                 <div className="panel-heading"><div><span className="section-kicker">SOURCE EVIDENCE</span><h2>Original submission</h2></div><span className="review-status">{selected.status}</span></div>
                 <p className="source-description">{selected.description}</p>
                 <dl className="source-meta"><div><dt>Reported category</dt><dd>{selected.disaster_type.replaceAll('_', ' ')}</dd></div><div><dt>Location</dt><dd>{selected.location_name || 'Not provided'}</dd></div><div><dt>Coordinates</dt><dd>{selected.latitude}, {selected.longitude}</dd></div><div><dt>Reference</dt><dd>{selected.id}</dd></div></dl>
+                {selected.status !== 'DISMISSED' && (
+                  <form className="review-location-editor" onSubmit={saveLocationCorrection}>
+                    <div className="review-location-editor__heading">
+                      <strong>Map location</strong>
+                      <small>Corrections are saved separately; original submitted coordinates remain unchanged.</small>
+                    </div>
+                    <div className="field-grid">
+                      <label className="field"><span>Latitude <b>*</b></span><input aria-label="Corrected latitude" type="number" step="any" value={locationDraft.latitude} onChange={(event) => updateLocationCoordinate('latitude', event.target.value)} /></label>
+                      <label className="field"><span>Longitude <b>*</b></span><input aria-label="Corrected longitude" type="number" step="any" value={locationDraft.longitude} onChange={(event) => updateLocationCoordinate('longitude', event.target.value)} /></label>
+                    </div>
+                    <label className="field"><span>Corrected location name <small>OPTIONAL</small></span><input aria-label="Corrected location name" maxLength="255" value={locationDraft.location_name} onChange={(event) => setLocationDraft((current) => ({ ...current, location_name: event.target.value }))} /></label>
+                    {selected.location_correction && <p className="location-hint">Last corrected {new Date(selected.location_correction.corrected_at).toLocaleString()}.</p>}
+                    <button className="button button--quiet review-location-editor__save" type="submit" disabled={locationSaving}>
+                      {locationSaving ? <LoaderCircle className="location-spinner" size={15} /> : <Save size={15} />}
+                      {locationSaving ? 'Saving…' : 'Save map location'}
+                    </button>
+                  </form>
+                )}
                 {selected.image && <a className="source-image-link" href={selected.image.url} target="_blank" rel="noreferrer">Open attached image</a>}
                 <div className="workflow-actions">
                   {selected.status === 'SUBMITTED' && <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('review')}>Start review</button>}
@@ -239,6 +342,66 @@ export default function ReviewPage() {
                   {selected.status === 'ACCEPTED' && incident && <span className="incident-confirmed">CONFIRMED · {incident.id}</span>}
                   {selected.status === 'DISMISSED' && <span className="incident-dismissed">DISMISSED · excluded from planning</span>}
                 </div>
+              </section>
+
+              <section className="panel report-relationships">
+                <div className="panel-heading">
+                  <div><span className="section-kicker">POTENTIAL RELATIONSHIPS</span><h2>Related reports</h2></div>
+                  {selected.status !== 'DISMISSED' && (
+                    <button className="button button--quiet" type="button" disabled={relationshipBusy} onClick={findPotentialRelationships}>
+                      {relationshipBusy ? <LoaderCircle className="location-spinner" size={15} /> : null}
+                      {relationshipBusy ? 'Checking…' : 'Find potential matches'}
+                    </button>
+                  )}
+                </div>
+                <p className="relationship-safety-note">Suggestions use submission time and corrected map distance. Semantic similarity is included only when enabled. A relationship decision never merges records.</p>
+                {relationships.filter((item) => (
+                  item.report.id === selected.id || item.related_report.id === selected.id
+                )).length === 0 ? (
+                  <p className="relationship-empty">No potential relationships are available for this report.</p>
+                ) : (
+                  <div className="relationship-list">
+                    {relationships.filter((item) => (
+                      item.report.id === selected.id || item.related_report.id === selected.id
+                    )).map((item) => {
+                      const other = item.report.id === selected.id ? item.related_report : item.report;
+                      return (
+                        <article className="relationship-item" key={item.id}>
+                          <div className="relationship-item__heading">
+                            <strong>{other.disaster_type.replaceAll('_', ' ')}</strong>
+                            <span className={`relationship-status relationship-status--${item.status.toLowerCase()}`}>{item.status}</span>
+                          </div>
+                          <p>{other.description}</p>
+                          <small>{other.location_name || `${other.latitude}, ${other.longitude}`} · {new Date(other.submitted_at).toLocaleString()}</small>
+                          <div className="relationship-evidence">
+                            <span>{item.evidence.time_difference_hours} h apart</span>
+                            <span>{item.evidence.distance_km} km apart</span>
+                            {item.evidence.semantic_matching_enabled && item.evidence.semantic_similarity != null && (
+                              <span>Semantic similarity {Math.round(item.evidence.semantic_similarity * 100)}%</span>
+                            )}
+                          </div>
+                          {item.status === 'PROPOSED' ? (
+                            <div className="relationship-decision">
+                              <input
+                                aria-label="Relationship decision note"
+                                value={relationshipReason}
+                                onChange={(event) => setRelationshipReason(event.target.value)}
+                                placeholder="Decision note (optional)"
+                              />
+                              <button className="button button--primary" type="button" disabled={relationshipBusy} onClick={() => decideRelationship(item.id, 'confirm')}>Confirm link</button>
+                              <button className="button button--quiet" type="button" disabled={relationshipBusy} onClick={() => decideRelationship(item.id, 'reject')}>Reject</button>
+                            </div>
+                          ) : (
+                            <small className="relationship-decision-meta">
+                              Decision recorded {item.decided_at ? new Date(item.decided_at).toLocaleString() : ''}
+                              {item.decision_reason ? ` · ${item.decision_reason}` : ''}
+                            </small>
+                          )}
+                        </article>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
 
               {incident && (

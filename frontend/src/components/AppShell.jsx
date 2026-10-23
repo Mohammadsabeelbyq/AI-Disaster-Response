@@ -5,7 +5,7 @@ export default function AppShell({ children, user = null, onSignOut }) {
   const location = useLocation();
   const isImport = location.pathname === '/import';
   const isReview = location.pathname === '/review';
-  const isIncidentMap = location.pathname === '/incidents/map';
+  const isIncidentMap = location.pathname === '/incident-map';
   const isPriorityPolicy = location.pathname === '/admin/priority-policy';
 
   return (
@@ -30,7 +30,7 @@ export default function AppShell({ children, user = null, onSignOut }) {
                 </NavLink>
               )}
               {(user.role === 'MANAGEMENT' || user.role === 'ADMIN') && (
-                <NavLink to="/incidents/map" className={isIncidentMap ? 'mode-switch__link mode-switch__link--active' : 'mode-switch__link'}>
+                <NavLink to="/incident-map" className={isIncidentMap ? 'mode-switch__link mode-switch__link--active' : 'mode-switch__link'}>
                   <MapIcon size={16} />Incident map
                 </NavLink>
               )}

@@ -1,13 +1,25 @@
 const COORDINATE_PAIR = /(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))/;
 const COMPLETE_COORDINATE_PAIR = /^\s*(-?(?:\d+\.?\d*|\.\d+))\s*,\s*(-?(?:\d+\.?\d*|\.\d+))\s*$/;
 
-function coordinates(latitude, longitude) {
+export function validateCoordinates(latitude, longitude) {
+  if (latitude === null || latitude === undefined || String(latitude).trim() === ''
+      || longitude === null || longitude === undefined || String(longitude).trim() === '') {
+    return { kind: 'error', message: 'Enter both latitude and longitude.' };
+  }
+
   const lat = Number(latitude);
   const lon = Number(longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return { kind: 'error', message: 'Latitude and longitude must be valid numbers.' };
+  }
+  if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
     return { kind: 'error', message: 'Those coordinates are outside the valid latitude/longitude range.' };
   }
   return { kind: 'coordinates', latitude: lat, longitude: lon };
+}
+
+function coordinates(latitude, longitude) {
+  return validateCoordinates(latitude, longitude);
 }
 
 export function parseLocationInput(input) {

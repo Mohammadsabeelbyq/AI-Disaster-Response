@@ -13,6 +13,8 @@ from app.schemas.report import ExtractedFacts
 log = logging.getLogger(__name__)
 EXTRACTOR_VERSION = "rules-v2-resnet50"
 _MODEL_PATH = Path(__file__).resolve().parents[3] / "weights" / "disaster_model.keras"
+_MODEL_CONFIG_PATH = Path(__file__).resolve().parents[3] / "weights" / "config.json"
+_MODEL_WEIGHTS_PATH = Path(__file__).resolve().parents[3] / "weights" / "model.weights.h5"
 _CLASS_LABELS = (
     "Damaged_Infrastructure", "Fire_Disaster", "Human_Damage",
     "Land_Disaster", "Non_Damage", "Water_Disaster",
@@ -122,11 +124,22 @@ def _load_classifier():
     from tensorflow import keras
     from tensorflow.keras.applications.resnet50 import preprocess_input
 
-    return keras.models.load_model(
-        _MODEL_PATH,
-        custom_objects={"preprocess_input": preprocess_input},
-        compile=False,
+    custom_objects = {"preprocess_input": preprocess_input}
+    if _MODEL_PATH.is_file():
+        return keras.models.load_model(
+            _MODEL_PATH,
+            custom_objects=custom_objects,
+            compile=False,
+        )
+    if not _MODEL_CONFIG_PATH.is_file() or not _MODEL_WEIGHTS_PATH.is_file():
+        raise FileNotFoundError("The bundled disaster image classifier files are missing.")
+
+    model = keras.models.model_from_json(
+        _MODEL_CONFIG_PATH.read_text(encoding="utf-8"),
+        custom_objects=custom_objects,
     )
+    model.load_weights(_MODEL_WEIGHTS_PATH)
+    return model
 
 
 def analyze_image(data: bytes, mime_type: str) -> tuple[str, list[dict] | None]:

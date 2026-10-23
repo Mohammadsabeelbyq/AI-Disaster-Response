@@ -5,7 +5,7 @@ import markerIconUrl from 'leaflet/dist/images/marker-icon.png';
 import markerRetinaUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png';
 import { MapContainer, Marker, TileLayer, useMap, useMapEvents } from 'react-leaflet';
-import { parseLocationInput } from './mapLocation.js';
+import { parseLocationInput, validateCoordinates } from './mapLocation.js';
 
 const DEFAULT_CENTER = [10.027, 76.308];
 const markerIcon = L.icon({
@@ -66,30 +66,42 @@ export default function LocationPicker({ value, onChange }) {
   const [locating, setLocating] = useState(false);
   const [reverseSearching, setReverseSearching] = useState(false);
   const lookupId = useRef(0);
+  const pickerCoordinates = useRef(null);
 
   useEffect(() => {
-    if (value.latitude && value.longitude) {
-      setPosition([Number(value.latitude), Number(value.longitude)]);
+    const coordinates = validateCoordinates(value.latitude, value.longitude);
+    if (coordinates.kind === 'coordinates') {
+      setPosition([coordinates.latitude, coordinates.longitude]);
+      setError('');
+      const coordinateKey = `${coordinates.latitude},${coordinates.longitude}`;
+      if (pickerCoordinates.current === coordinateKey) {
+        pickerCoordinates.current = null;
+      } else {
+        lookupId.current += 1;
+        setReverseSearching(false);
+      }
     } else {
       lookupId.current += 1;
+      pickerCoordinates.current = null;
       setPosition(null);
       setReverseSearching(false);
     }
   }, [value.latitude, value.longitude]);
 
   async function selectCoordinates(latitude, longitude, placeName = '') {
-    const lat = Number(latitude);
-    const lon = Number(longitude);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon) || lat < -90 || lat > 90 || lon < -180 || lon > 180) {
-      setError('Those coordinates are outside the valid latitude/longitude range.');
+    const coordinates = validateCoordinates(latitude, longitude);
+    if (coordinates.kind === 'error') {
+      setError(coordinates.message);
       return;
     }
 
+    const { latitude: lat, longitude: lon } = coordinates;
     const requestId = ++lookupId.current;
     const nextPosition = [lat, lon];
     setPosition(nextPosition);
     setResults([]);
     setError('');
+    pickerCoordinates.current = `${lat.toFixed(6)},${lon.toFixed(6)}`;
     onChange({ latitude: lat.toFixed(6), longitude: lon.toFixed(6), location_name: placeName });
 
     if (placeName) {

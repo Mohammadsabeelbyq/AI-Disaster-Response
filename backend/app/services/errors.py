@@ -35,3 +35,7 @@ class Conflict(AppError):
 
 class StorageFailure(AppError):
     status_code = 500
+
+
+class ServiceUnavailable(AppError):
+    status_code = 503

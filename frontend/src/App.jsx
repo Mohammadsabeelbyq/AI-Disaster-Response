@@ -28,7 +28,7 @@ export default function App() {
             <Route path="/review" element={<ReviewPage />} />
           )}
           {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
-            <Route path="/incidents/map" element={<IncidentMapPage />} />
+            <Route path="/incident-map" element={<IncidentMapPage />} />
           )}
           {user?.role === 'ADMIN' && (
             <Route path="/admin/priority-policy" element={<PriorityPolicyPage />} />

@@ -4,3 +4,4 @@ from app.models.user import User  # noqa: F401
 from app.models.incident import Incident, IncidentPriorityOverride, PriorityRuleConfig, ResponsePlan, WorkflowAudit  # noqa: F401
 from app.models.impact_area import ImpactArea  # noqa: F401
 from app.models.resource import RegisteredResource  # noqa: F401
+from app.models.report_relationship import ReportRelationshipRecord  # noqa: F401

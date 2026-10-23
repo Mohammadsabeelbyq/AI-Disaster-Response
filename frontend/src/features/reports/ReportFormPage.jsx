@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { ArrowRight, Check, ImagePlus, MapPin, Upload, X } from 'lucide-react';
 import { submitReport } from '../../api/reports.js';
 import LocationPicker from './LocationPicker.jsx';
+import { validateCoordinates } from './mapLocation.js';
 import { calculatePreliminaryPriority } from './priorityCalculation.js';
 
 const disasterTypes = [
@@ -19,6 +20,13 @@ export default function ReportFormPage() {
   const [submittedReport, setSubmittedReport] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [location, setLocation] = useState({ latitude: '', longitude: '', location_name: '' });
+  const [locationError, setLocationError] = useState('');
+
+  function updateCoordinate(field, value) {
+    setLocation((current) => ({ ...current, [field]: value, location_name: '' }));
+    setLocationError('');
+    setMessage(null);
+  }
 
   function handleFile(file) {
     setMessage(null);
@@ -42,10 +50,12 @@ export default function ReportFormPage() {
     event.preventDefault();
     setMessage(null);
     setSubmittedReport(null);
-    if (!location.latitude || !location.longitude) {
-      setMessage({ kind: 'error', text: 'Select a location on the map before submitting.' });
+    const coordinates = validateCoordinates(location.latitude, location.longitude);
+    if (coordinates.kind === 'error') {
+      setLocationError(coordinates.message);
       return;
     }
+    setLocationError('');
     setSubmitting(true);
     try {
       const result = await submitReport(new FormData(formRef.current));
@@ -54,6 +64,7 @@ export default function ReportFormPage() {
       formRef.current.reset();
       setSelectedFile(null);
       setLocation({ latitude: '', longitude: '', location_name: '' });
+      setLocationError('');
     } catch (requestError) {
       setMessage({ kind: 'error', text: requestError.message });
     } finally { setSubmitting(false); }
@@ -88,9 +99,11 @@ export default function ReportFormPage() {
           <label className="field"><span>Description <b>*</b></span><textarea name="description" required minLength="1" maxLength="5000" rows="5" placeholder="What is happening? Who or what is affected?" /></label>
           <LocationPicker value={location} onChange={setLocation} />
           <div className="field-grid">
-            <label className="field"><span>Latitude <b>*</b></span><input name="latitude" type="number" step="any" min="-90" max="90" placeholder="Choose on map" value={location.latitude} readOnly required /></label>
-            <label className="field"><span>Longitude <b>*</b></span><input name="longitude" type="number" step="any" min="-180" max="180" placeholder="Choose on map" value={location.longitude} readOnly required /></label>
+            <label className="field"><span>Latitude <b>*</b></span><input name="latitude" type="number" step="any" placeholder="Enter latitude" value={location.latitude} onChange={(event) => updateCoordinate('latitude', event.target.value)} aria-invalid={Boolean(locationError)} /></label>
+            <label className="field"><span>Longitude <b>*</b></span><input name="longitude" type="number" step="any" placeholder="Enter longitude" value={location.longitude} onChange={(event) => updateCoordinate('longitude', event.target.value)} aria-invalid={Boolean(locationError)} /></label>
           </div>
+          <p className="location-hint">Enter coordinates directly or choose a point on the map. Latitude: -90 to 90; longitude: -180 to 180.</p>
+          {locationError && <p className="location-error" role="alert">{locationError}</p>}
           <label className="field"><span>Location name <small>AUTO-FILLED</small></span><div className="input-with-icon"><MapPin size={17} /><input name="location_name" maxLength="255" placeholder="Choose a point on the map" value={location.location_name} readOnly /></div></label>
           <div className="field"><span>Photo <small>OPTIONAL</small></span>
             <input ref={fileRef} className="visually-hidden" name="image" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => handleFile(event.target.files?.[0])} />
