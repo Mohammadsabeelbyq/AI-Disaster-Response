@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models import IncidentMedia, IncidentReport, ReportLocationCorrection, ReportStatus
 from app.models.incident import WorkflowAudit
-from app.schemas.report import ReportCreate
+from app.schemas.report import ReportCreate, ReportSubmissionAnalysis
 from app.services import extraction_service, media_service
 from app.services.errors import Conflict, NotFound, StorageFailure
 from app.services.incident_tracking import ensure_report_tracking_metadata
@@ -26,7 +26,8 @@ def _media_row(image: ValidatedImage, storage_path: str) -> IncidentMedia:
 
 
 def create_report(db: Session, data: ReportCreate, image: ValidatedImage | None = None,
-                  submitted_by: uuid.UUID | None = None) -> IncidentReport:
+                  submitted_by: uuid.UUID | None = None,
+                  analysis: ReportSubmissionAnalysis | None = None) -> IncidentReport:
     """Create ONE report (+ its optional, already-validated image) in a single transaction.
     If anything fails nothing is left behind: no report row and no orphan file."""
     report = IncidentReport(
@@ -37,7 +38,12 @@ def create_report(db: Session, data: ReportCreate, image: ValidatedImage | None 
         if image is not None:
             stored_path = media_service.store_image(image)
             report.media.append(_media_row(image, stored_path))
-        report.extraction = extraction_service.create_extraction(report, image)
+        report.extraction = extraction_service.create_extraction(
+            report,
+            image,
+            analysis=analysis,
+            reviewed_by=submitted_by,
+        )
         db.add(report)
         db.commit()
     except (SQLAlchemyError, OSError) as exc:

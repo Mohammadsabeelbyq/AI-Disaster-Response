@@ -29,12 +29,30 @@ class Settings:
     report_relationship_time_window_hours: float
     report_relationship_radius_km: float
     semantic_report_matching_enabled: bool
+    groq_api_key: str | None
+    groq_model: str
+    groq_timeout_seconds: float
+    groq_max_resources: int
+    groq_max_tokens: int
+    groq_temperature: float
     faiss_index_dir: Path
     embedding_model: str
     auth_secret_key: str | None
     auth_cookie_secure: bool
     auth_token_expire_minutes: int
     demo_accounts: tuple[tuple[str, str, str], ...]
+
+    def __post_init__(self):
+        if self.groq_timeout_seconds <= 0:
+            raise ValueError("GROQ_TIMEOUT_SECONDS must be greater than zero")
+        if self.groq_max_resources < 1:
+            raise ValueError("GROQ_MAX_RESOURCES must be at least one")
+        if self.groq_max_tokens < 1:
+            raise ValueError("GROQ_MAX_TOKENS must be at least one")
+        if not 0 <= self.groq_temperature <= 2:
+            raise ValueError("GROQ_TEMPERATURE must be between zero and two")
+        if not self.groq_model:
+            raise ValueError("GROQ_MODEL must not be blank")
 
 
 @lru_cache
@@ -45,7 +63,7 @@ def get_settings() -> Settings:
         max_image_bytes=int(os.getenv("MAX_IMAGE_BYTES", 5 * 1024 * 1024)),
         max_import_records=int(os.getenv("MAX_IMPORT_RECORDS", 1000)),
         impact_max_radius_metres=int(os.getenv("IMPACT_MAX_RADIUS_METRES", "100000")),
-        resource_search_radius_metres=int(os.getenv("RESOURCE_SEARCH_RADIUS_METRES", "50000")),
+        resource_search_radius_metres=int(os.getenv("RESOURCE_SEARCH_RADIUS_METRES", "100000")),
         resource_max_search_radius_metres=int(
             os.getenv("RESOURCE_MAX_SEARCH_RADIUS_METRES", "100000")),
         report_relationship_time_window_hours=float(
@@ -55,6 +73,12 @@ def get_settings() -> Settings:
         semantic_report_matching_enabled=(
             os.getenv("ENABLE_SEMANTIC_REPORT_MATCHING", "false").lower() == "true"
         ),
+        groq_api_key=os.getenv("GROQ_API_KEY") or None,
+        groq_model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip(),
+        groq_timeout_seconds=float(os.getenv("GROQ_TIMEOUT_SECONDS", "20")),
+        groq_max_resources=int(os.getenv("GROQ_MAX_RESOURCES", "50")),
+        groq_max_tokens=int(os.getenv("GROQ_MAX_TOKENS", "1200")),
+        groq_temperature=float(os.getenv("GROQ_TEMPERATURE", "0.2")),
         faiss_index_dir=Path(os.getenv("FAISS_INDEX_DIR", "../data/faiss")).resolve(),
         embedding_model=os.getenv(
             "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"),

@@ -66,7 +66,12 @@ export function classifyPriority(score, thresholds = DEFAULT_PRIORITY_THRESHOLDS
   return 'LOW';
 }
 
-export function calculatePreliminaryPriority(facts, confidence = null, weights = DEFAULT_PRIORITY_WEIGHTS) {
+export function calculatePreliminaryPriority(
+  facts,
+  confidence = null,
+  weights = DEFAULT_PRIORITY_WEIGHTS,
+  thresholds = DEFAULT_PRIORITY_THRESHOLDS,
+) {
   if (!facts || typeof facts !== 'object') return null;
 
   const factors = {};
@@ -107,7 +112,10 @@ export function calculatePreliminaryPriority(facts, confidence = null, weights =
   }
   if (hazardScores.length > 0) {
     factors.hazard_level = Math.max(...hazardScores);
-    confidenceFields.push('hazards');
+    if (hazards.some((hazard) => HAZARD_SCORES[String(hazard || '').trim().toUpperCase()] != null)) {
+      confidenceFields.push('hazards');
+    }
+    if (CATEGORY_HAZARD_SCORES[categoryKey] != null) confidenceFields.push('incident_category');
   }
 
   const factorKeys = Object.keys(factors);
@@ -136,7 +144,7 @@ export function calculatePreliminaryPriority(facts, confidence = null, weights =
   }
 
   const finalScore = Math.round(Math.max(0, Math.min(100, baseScorePoints * multiplier)) * 10) / 10;
-  const band = classifyPriority(finalScore);
+  const band = classifyPriority(finalScore, thresholds);
 
   const riskFactors = {};
   for (const key of factorKeys) {

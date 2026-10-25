@@ -1,9 +1,12 @@
 """Report review, incident confirmation, and human-supervised response planning."""
 import uuid
+import logging
+import time
 from datetime import datetime, timezone
 from typing import Callable
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
@@ -15,16 +18,20 @@ from app.models.incident import (
     ResponsePlan,
     WorkflowAudit,
 )
-from app.models.resource import RegisteredResource
+from app.models.report_relationship import ReportRelationshipRecord
+from app.models.resources import (
+    Department,
+    Resource,
+    ResourceAssignment,
+    ResourceAvailabilityEvent,
+)
 from app.models.user import User
 from app.models.report import IncidentReport, ReportStatus
 from app.services import resource_service
-from app.services.errors import Conflict, NotFound, ValidationFailed
-from app.services.resource_service import (
-    _distance_metres,
-    _incident_capabilities,
-    _normalise_capability,
-)
+from app.services.errors import Conflict, NotFound, StorageFailure, ValidationFailed
+from app.services.groq_planner import GroqPlanDraft, GroqPlannerError, generate_plan_draft
+from app.services.media_service import delete_image
+from app.services.resource_service import _incident_capabilities
 from app.services.priority_service import (
     DEFAULT_PRIORITY_THRESHOLDS,
     DEFAULT_PRIORITY_WEIGHTS,
@@ -35,6 +42,8 @@ from app.services.priority_service import (
     validate_priority_thresholds,
     validate_priority_weights,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _audit(db: Session, actor_id: uuid.UUID, event_type: str, *, report_id=None,
@@ -212,22 +221,13 @@ def override_incident_priority(db: Session, incident_id: uuid.UUID, actor_id: uu
     return incident
 
 
-def start_report_review(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID) -> IncidentReport:
-    report = _report_or_404(db, report_id)
-    if report.status != ReportStatus.SUBMITTED:
-        raise Conflict(f"Only SUBMITTED reports can enter review (current status: {report.status}).")
-    report.status = ReportStatus.UNDER_REVIEW
-    _audit(db, actor_id, "REPORT_REVIEW_STARTED", report_id=report.id,
-           details={"from": ReportStatus.SUBMITTED, "to": ReportStatus.UNDER_REVIEW})
-    db.commit()
-    db.refresh(report)
-    return report
-
-
 def confirm_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID) -> Incident:
     report = _report_or_404(db, report_id)
-    if report.status != ReportStatus.UNDER_REVIEW:
-        raise Conflict(f"Only UNDER_REVIEW reports can be confirmed (current status: {report.status}).")
+    if report.status not in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}:
+        raise Conflict(
+            "Only submitted reports can be confirmed "
+            f"(current status: {report.status})."
+        )
     if report.incident is not None:
         raise Conflict("This report already has a confirmed incident.")
 
@@ -251,15 +251,53 @@ def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid
         raise ValidationFailed("A reason is required to link a report.")
     if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
         raise Conflict("Reports can only be linked to an active canonical incident.")
-    if report.status not in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}:
-        raise Conflict("Only unconfirmed reports can be linked to an incident.")
-    if report.incident is not None or report.incident_links:
+    if report.id == incident.report_id:
+        raise Conflict("A report cannot be linked to its own incident.")
+    if report.incident_links:
         raise Conflict("This report is already associated with an incident.")
 
-    report.status = "LINKED"
+    source_incident = report.incident
+    source_report_status = report.status
+    source_incident_status = source_incident.status if source_incident is not None else None
+    transferred_link_ids = []
+    if source_incident is None:
+        if report.status not in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}:
+            raise Conflict(
+                "Only submitted reports or confirmed incident reports can be linked "
+                f"(current status: {report.status})."
+            )
+        report.status = "LINKED"
+    else:
+        if (
+            source_incident.status not in {"CONFIRMED", "ACTIVE"}
+            or source_incident.merged_into_id is not None
+        ):
+            raise Conflict("Only an unlinked open incident can be linked to a canonical incident.")
+        if db.scalar(
+            select(ResourceAssignment.id).where(
+                ResourceAssignment.incident_id == source_incident.id,
+                ResourceAssignment.released_at.is_(None),
+            )
+        ) is not None:
+            raise Conflict("Release active resource assignments before linking this incident.")
+        source_incident.status = "MERGED"
+        source_incident.merged_into_id = incident.id
+
+        source_links = db.scalars(
+            select(IncidentReportLink).where(
+                IncidentReportLink.incident_id == source_incident.id,
+            )
+        ).all()
+        for link in source_links:
+            link.incident_id = incident.id
+            transferred_link_ids.append(str(link.id))
+            if link.source_incident_id is None:
+                link.source_incident_id = source_incident.id
+
     db.add(IncidentReportLink(
         incident_id=incident.id,
         report_id=report.id,
+        source_incident_id=source_incident.id if source_incident is not None else None,
         relationship_type="LINKED_REPORT",
         linked_by=actor_id,
         reason=reason_text,
@@ -267,80 +305,364 @@ def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid
     _audit(
         db, actor_id, "REPORT_LINKED_TO_INCIDENT", report_id=report.id,
         incident_id=incident.id,
-        details={"relationship_type": "LINKED_REPORT", "reason": reason_text},
+        details={
+            "relationship_type": "LINKED_REPORT",
+            "reason": reason_text,
+            "source_incident_id": (
+                str(source_incident.id) if source_incident is not None else None
+            ),
+            "source_report_status": source_report_status,
+            "source_incident_status": source_incident_status,
+            "transferred_link_ids": transferred_link_ids,
+        },
     )
     db.commit()
     db.expire_all()
     return get_incident(db, incident.id)
 
 
-def merge_incident(db: Session, source_incident_id: uuid.UUID,
-                   target_incident_id: uuid.UUID, actor_id: uuid.UUID,
-                   reason: str) -> Incident:
+def _merged_incident_descendants(db: Session, incident_id: uuid.UUID) -> set[uuid.UUID]:
+    descendants = {incident_id}
+    while True:
+        child_ids = set(db.scalars(
+            select(Incident.id).where(Incident.merged_into_id.in_(descendants))
+        ).all())
+        new_ids = child_ids - descendants
+        if not new_ids:
+            return descendants
+        descendants.update(new_ids)
+
+
+def _restore_merged_incident(
+    db: Session,
+    source: Incident,
+    canonical: Incident,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> None:
+    if source.status != "MERGED" or source.merged_into_id != canonical.id:
+        raise Conflict("The source incident is no longer merged into this incident.")
+    if db.scalar(
+        select(ResourceAssignment.id).where(
+            ResourceAssignment.incident_id == source.id,
+            ResourceAssignment.released_at.is_(None),
+        )
+    ) is not None:
+        raise Conflict("Release active resource assignments before unlinking this incident.")
+
+    anchor = db.scalar(
+        select(IncidentReportLink).where(
+            IncidentReportLink.incident_id == canonical.id,
+            IncidentReportLink.report_id == source.report_id,
+            IncidentReportLink.source_incident_id == source.id,
+        )
+    )
+    if anchor is None:
+        raise Conflict("The merge link could not be verified; no changes were made.")
+
+    link_event = db.scalar(
+        select(WorkflowAudit)
+        .where(
+            WorkflowAudit.event_type == "REPORT_LINKED_TO_INCIDENT",
+            WorkflowAudit.report_id == source.report_id,
+            WorkflowAudit.incident_id == canonical.id,
+        )
+        .order_by(WorkflowAudit.created_at.desc())
+    )
+    previous_status = (
+        link_event.details.get("source_incident_status")
+        if link_event is not None else None
+    )
+    if previous_status not in {"CONFIRMED", "ACTIVE"}:
+        previous_status = "ACTIVE"
+
+    descendants = _merged_incident_descendants(db, source.id)
+    links = db.scalars(
+        select(IncidentReportLink)
+        .options(
+            joinedload(IncidentReportLink.report)
+            .joinedload(IncidentReport.incident)
+        )
+        .where(IncidentReportLink.incident_id == canonical.id)
+    ).unique().all()
+    restored_link_ids = []
+    for link in links:
+        if link.id == anchor.id:
+            continue
+        report_incident = link.report.incident
+        belongs_to_source = (
+            link.source_incident_id in descendants
+            or (report_incident is not None and report_incident.id in descendants)
+        )
+        if not belongs_to_source:
+            continue
+        link.incident_id = source.id
+        if link.source_incident_id == source.id:
+            link.source_incident_id = None
+        restored_link_ids.append(str(link.id))
+
+    db.delete(anchor)
+    source.status = previous_status
+    source.merged_into_id = None
+    _audit(
+        db,
+        actor_id,
+        "INCIDENT_UNMERGED_FROM_CANONICAL",
+        incident_id=source.id,
+        details={
+            "canonical_incident_id": str(canonical.id),
+            "reason": reason,
+            "restored_link_ids": restored_link_ids,
+        },
+    )
+    db.flush()
+
+
+def unlink_report_from_incident(
+    db: Session,
+    incident_id: uuid.UUID,
+    report_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> Incident:
+    incident = get_incident(db, incident_id)
+    report = _report_or_404(db, report_id)
     reason_text = reason.strip()
     if not reason_text:
-        raise ValidationFailed("A reason is required to merge incidents.")
-    if source_incident_id == target_incident_id:
-        raise Conflict("An incident cannot be merged into itself.")
+        raise ValidationFailed("A reason is required to unlink a report.")
 
-    source = get_incident(db, source_incident_id)
-    target = get_incident(db, target_incident_id)
-    if source.status != "CONFIRMED" or source.merged_into_id is not None:
-        raise Conflict("Only an unmerged confirmed incident can be merged.")
-    if target.status not in {"CONFIRMED", "ACTIVE"} or target.merged_into_id is not None:
-        raise Conflict("The target must be an active canonical incident.")
-    if source.report_id == target.report_id:
-        raise Conflict("Incidents based on the same report cannot be merged.")
-
-    # Preserve each source report and its original incident; only add a canonical relationship.
-    db.add(IncidentReportLink(
-        incident_id=target.id,
-        report_id=source.report_id,
-        source_incident_id=source.id,
-        relationship_type="MERGED_INCIDENT",
-        linked_by=actor_id,
-        reason=reason_text,
-    ))
-    source.status = "MERGED"
-    source.merged_into_id = target.id
-
-    # Existing report links follow the resulting canonical incident without rewriting reports.
-    source_links = db.scalars(
+    link = db.scalar(
         select(IncidentReportLink).where(
-            IncidentReportLink.incident_id == source.id,
+            IncidentReportLink.incident_id == incident.id,
+            IncidentReportLink.report_id == report.id,
         )
-    ).all()
-    for link in source_links:
-        link.incident_id = target.id
-        if link.source_incident_id is None:
-            link.source_incident_id = source.id
+    )
+    if link is None:
+        raise NotFound("This report is not linked to the selected incident.")
+
+    source_incident = report.incident
+    if source_incident is not None:
+        _restore_merged_incident(
+            db, source_incident, incident, actor_id, reason_text,
+        )
+    else:
+        link_event = db.scalar(
+            select(WorkflowAudit)
+            .where(
+                WorkflowAudit.event_type == "REPORT_LINKED_TO_INCIDENT",
+                WorkflowAudit.report_id == report.id,
+                WorkflowAudit.incident_id == incident.id,
+            )
+            .order_by(WorkflowAudit.created_at.desc())
+        )
+        previous_status = (
+            link_event.details.get("source_report_status")
+            if link_event is not None else None
+        )
+        report.status = (
+            previous_status
+            if previous_status in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}
+            else ReportStatus.SUBMITTED
+        )
+        db.delete(link)
 
     _audit(
-        db, actor_id, "INCIDENT_MERGED", report_id=source.report_id,
-        incident_id=target.id,
+        db,
+        actor_id,
+        "REPORT_UNLINKED_FROM_INCIDENT",
+        report_id=report.id,
+        incident_id=incident.id,
         details={
-            "source_incident_id": str(source.id),
-            "target_incident_id": str(target.id),
-            "source_report_id": str(source.report_id),
             "reason": reason_text,
+            "source_incident_id": (
+                str(source_incident.id) if source_incident is not None else None
+            ),
         },
     )
     db.commit()
     db.expire_all()
-    return get_incident(db, target.id)
+    return get_incident(db, incident.id)
+
+
+def delete_report(
+    db: Session,
+    report_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> None:
+    report = _report_or_404(db, report_id)
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to delete a report.")
+
+    media_paths = [media.storage_path for media in report.media]
+    incident = report.incident
+    if incident is not None:
+        incident = db.scalar(
+            select(Incident)
+            .options(selectinload(Incident.plans).selectinload(ResponsePlan.assignments))
+            .where(Incident.id == incident.id)
+        )
+        if incident.merged_into_id is not None:
+            canonical = db.get(Incident, incident.merged_into_id)
+            if canonical is None:
+                raise Conflict("The canonical incident could not be found; report was not deleted.")
+            _restore_merged_incident(
+                db, incident, canonical, actor_id, reason_text,
+            )
+        else:
+            merged_children = db.scalars(
+                select(Incident).where(Incident.merged_into_id == incident.id)
+            ).all()
+            for child in merged_children:
+                _restore_merged_incident(
+                    db, child, incident, actor_id, reason_text,
+                )
+
+        linked_reports = db.scalars(
+            select(IncidentReportLink)
+            .options(joinedload(IncidentReportLink.report))
+            .where(IncidentReportLink.incident_id == incident.id)
+        ).unique().all()
+        for link in linked_reports:
+            linked_report = link.report
+            if linked_report.id != report.id and linked_report.incident is None:
+                linked_report.status = ReportStatus.SUBMITTED
+
+        assignments = [
+            assignment
+            for plan in incident.plans
+            for assignment in plan.assignments
+        ]
+        now = datetime.now(timezone.utc)
+        for assignment in assignments:
+            if assignment.released_at is None:
+                _release_assignment(db, assignment, actor_id, reason_text, now)
+            db.delete(assignment)
+
+    db.execute(
+        delete(ReportRelationshipRecord).where(
+            or_(
+                ReportRelationshipRecord.report_id == report.id,
+                ReportRelationshipRecord.related_report_id == report.id,
+            )
+        )
+    )
+    _audit(
+        db,
+        actor_id,
+        "REPORT_DELETED",
+        details={
+            "report_id": str(report.id),
+            "incident_id": str(incident.id) if incident is not None else None,
+            "reason": reason_text,
+        },
+    )
+    db.delete(report)
+    db.commit()
+    cleanup_errors = []
+    for storage_path in media_paths:
+        try:
+            delete_image(storage_path, strict=True)
+        except StorageFailure as exc:
+            cleanup_errors.append(exc)
+    if cleanup_errors:
+        raise StorageFailure(
+            "The report was deleted, but one or more attached images could not be removed."
+        ) from cleanup_errors[0]
 
 
 def dismiss_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID,
                    reason: str | None = None) -> IncidentReport:
     report = _report_or_404(db, report_id)
-    if report.status != ReportStatus.UNDER_REVIEW:
-        raise Conflict(f"Only UNDER_REVIEW reports can be dismissed (current status: {report.status}).")
+    if report.status not in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}:
+        raise Conflict(
+            "Only submitted reports can be dismissed "
+            f"(current status: {report.status})."
+        )
     report.status = ReportStatus.DISMISSED
     _audit(db, actor_id, "REPORT_DISMISSED", report_id=report.id,
            details={"reason": reason or "", "to": ReportStatus.DISMISSED})
     db.commit()
     db.refresh(report)
     return report
+
+
+def reopen_dismissed_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID,
+                            reason: str) -> IncidentReport:
+    report = _report_or_404(db, report_id)
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to reopen a dismissed report.")
+    if report.status != ReportStatus.DISMISSED:
+        raise Conflict(
+            "Only DISMISSED reports can be reopened "
+            f"(current status: {report.status})."
+        )
+    if report.incident is not None or report.incident_links:
+        raise Conflict("A report linked to an incident cannot be reopened.")
+
+    report.status = ReportStatus.SUBMITTED
+    _audit(
+        db,
+        actor_id,
+        "REPORT_REOPENED",
+        report_id=report.id,
+        details={
+            "reason": reason_text,
+            "from": ReportStatus.DISMISSED,
+            "to": ReportStatus.SUBMITTED,
+        },
+    )
+    db.commit()
+    db.refresh(report)
+    return report
+
+
+def close_incident(db: Session, incident_id: uuid.UUID, actor_id: uuid.UUID,
+                   reason: str) -> Incident:
+    incident = get_incident(db, incident_id)
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to close an incident.")
+    if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
+        raise Conflict("Only open, canonical incidents can be closed.")
+    active_assignment = db.scalar(
+        select(ResourceAssignment.id)
+        .where(
+            ResourceAssignment.incident_id == incident.id,
+            ResourceAssignment.released_at.is_(None),
+        )
+        .limit(1)
+    )
+    if active_assignment is not None:
+        raise Conflict("Release active resource assignments before closing this incident.")
+    incident.status = "CLOSED"
+    _audit(
+        db, actor_id, "INCIDENT_CLOSED", report_id=incident.report_id,
+        incident_id=incident.id, details={"reason": reason_text},
+    )
+    db.commit()
+    db.expire_all()
+    return get_incident(db, incident.id)
+
+
+def reopen_incident(db: Session, incident_id: uuid.UUID, actor_id: uuid.UUID,
+                    reason: str) -> Incident:
+    incident = get_incident(db, incident_id)
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to reopen an incident.")
+    if incident.status != "CLOSED" or incident.merged_into_id is not None:
+        raise Conflict("Only closed, canonical incidents can be reopened.")
+    incident.status = "ACTIVE"
+    _audit(
+        db, actor_id, "INCIDENT_REOPENED", report_id=incident.report_id,
+        incident_id=incident.id, details={"reason": reason_text},
+    )
+    db.commit()
+    db.expire_all()
+    return get_incident(db, incident.id)
 
 
 def list_incidents(db: Session) -> list[Incident]:
@@ -377,6 +699,312 @@ def get_response_plan(db: Session, plan_id: uuid.UUID) -> ResponsePlan:
     return plan
 
 
+def assign_response_plan_resources(
+    db: Session,
+    plan_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    resource_ids: list[uuid.UUID],
+    reason: str,
+) -> ResponsePlan:
+    plan = get_response_plan(db, plan_id)
+    if plan.status != "APPROVED":
+        raise Conflict("Resources can only be assigned from an approved response plan.")
+    incident = get_incident(db, plan.incident_id)
+    if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
+        raise Conflict("Resources can only be assigned to an active canonical incident.")
+
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("An assignment reason is required.")
+    if len(resource_ids) != len(set(resource_ids)):
+        raise ValidationFailed("Each resource can be assigned only once per request.")
+
+    recommended_ids = {
+        str(candidate["id"])
+        for candidate in plan.resource_candidates
+        if isinstance(candidate, dict) and candidate.get("id")
+    }
+    requested_ids = {str(resource_id) for resource_id in resource_ids}
+    registered_resources = {
+        resource.id: resource
+        for resource in db.scalars(
+            select(Resource).where(Resource.id.in_(resource_ids))
+        ).all()
+    }
+    missing_ids = set(resource_ids) - registered_resources.keys()
+    if missing_ids:
+        raise ValidationFailed("One or more selected resources are not registered.")
+
+    active_assignment = select(ResourceAssignment.id).where(
+        ResourceAssignment.resource_id == Resource.id,
+        ResourceAssignment.released_at.is_(None),
+    ).exists()
+    current_resources = {
+        resource.id: resource
+        for resource in db.scalars(
+            select(Resource)
+            .join(Department, Resource.department_id == Department.id)
+            .where(
+                Resource.id.in_(resource_ids),
+                Resource.availability == "AVAILABLE",
+                Department.is_active.is_(True),
+                Resource.resource_type.is_not(None),
+                Resource.latitude.is_not(None),
+                Resource.longitude.is_not(None),
+                ~active_assignment,
+            )
+            .with_for_update()
+        ).all()
+    }
+    if not set(resource_ids) <= current_resources.keys():
+        raise Conflict(
+            "One or more selected resources are no longer available or operationally eligible. "
+            "Refresh the resource list before assigning."
+        )
+
+    now = datetime.now(timezone.utc)
+    assigned_ids = []
+    for resource_id in resource_ids:
+        resource = current_resources[resource_id]
+        result = db.execute(
+            update(Resource)
+            .where(
+                Resource.id == resource_id,
+                Resource.availability == "AVAILABLE",
+                Resource.department_id.in_(
+                    select(Department.id).where(Department.is_active.is_(True))
+                ),
+            )
+            .values(availability="ASSIGNED", updated_at=now)
+        )
+        if result.rowcount != 1:
+            db.rollback()
+            raise Conflict(
+                f"Resource {resource.code} became unavailable before assignment. "
+                "Refresh the response plan and try again."
+            )
+
+        db.add(ResourceAssignment(
+            resource_id=resource.id,
+            incident_id=incident.id,
+            plan_id=plan.id,
+            assigned_by=actor_id,
+            assigned_at=now,
+            reason=reason_text,
+        ))
+        db.add(ResourceAvailabilityEvent(
+            resource_id=resource.id,
+            changed_by=actor_id,
+            previous_availability="AVAILABLE",
+            new_availability="ASSIGNED",
+            reason=reason_text,
+            changed_at=now,
+        ))
+        assigned_ids.append(str(resource.id))
+
+    _audit(
+        db,
+        actor_id,
+        "RESOURCES_ASSIGNED",
+        incident_id=incident.id,
+        plan_id=plan.id,
+        details={
+            "resource_ids": assigned_ids,
+            "recommended_resource_ids": [
+                resource_id for resource_id in assigned_ids
+                if resource_id in recommended_ids
+            ],
+            "coordinator_selected_nonrecommended_resource_ids": [
+                resource_id for resource_id in assigned_ids
+                if resource_id not in recommended_ids
+            ],
+            "reason": reason_text,
+        },
+    )
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise Conflict("A resource was assigned concurrently. Refresh the response plan.") from exc
+    return get_response_plan(db, plan.id)
+
+
+def release_response_plan_assignment(
+    db: Session,
+    plan_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> ResponsePlan:
+    plan = get_response_plan(db, plan_id)
+    assignment = db.scalar(
+        select(ResourceAssignment).where(
+            ResourceAssignment.id == assignment_id,
+            ResourceAssignment.plan_id == plan.id,
+        )
+    )
+    if assignment is None:
+        raise NotFound("Resource assignment not found for this response plan.")
+    if assignment.released_at is not None:
+        raise Conflict("This resource assignment has already been released.")
+
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A release reason is required.")
+    _release_assignment(db, assignment, actor_id, reason_text, datetime.now(timezone.utc))
+    db.commit()
+    return get_response_plan(db, plan.id)
+
+
+def _release_assignment(
+    db: Session,
+    assignment: ResourceAssignment,
+    actor_id: uuid.UUID,
+    reason: str,
+    now: datetime,
+) -> None:
+    resource = db.get(Resource, assignment.resource_id)
+    if resource is None:
+        raise NotFound("The assigned resource no longer exists.")
+
+    result = db.execute(
+        update(Resource)
+        .where(
+            Resource.id == resource.id,
+            Resource.availability == "ASSIGNED",
+        )
+        .values(availability="AVAILABLE", updated_at=now)
+    )
+    if result.rowcount != 1:
+        db.rollback()
+        raise Conflict("The resource state changed; refresh before releasing this assignment.")
+
+    resource.availability = "AVAILABLE"
+    assignment.released_by = actor_id
+    assignment.released_at = now
+    assignment.release_reason = reason
+    db.add(ResourceAvailabilityEvent(
+        resource_id=resource.id,
+        changed_by=actor_id,
+        previous_availability="ASSIGNED",
+        new_availability="AVAILABLE",
+        reason=reason,
+        changed_at=now,
+    ))
+    _audit(
+        db,
+        actor_id,
+        "RESOURCE_ASSIGNMENT_RELEASED",
+        incident_id=assignment.incident_id,
+        plan_id=assignment.plan_id,
+        details={
+            "assignment_id": str(assignment.id),
+            "resource_id": str(assignment.resource_id),
+            "reason": reason,
+        },
+    )
+
+
+def make_all_resources_available(
+    db: Session,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> dict:
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to make resources available.")
+
+    now = datetime.now(timezone.utc)
+    resources = db.scalars(
+        select(Resource)
+        .options(joinedload(Resource.department))
+        .order_by(Resource.code)
+        .with_for_update()
+    ).unique().all()
+    active_assignments = db.scalars(
+        select(ResourceAssignment)
+        .where(ResourceAssignment.released_at.is_(None))
+        .with_for_update()
+    ).all()
+    assignments_by_resource = {
+        assignment.resource_id: assignment for assignment in active_assignments
+    }
+
+    made_available = 0
+    already_available = 0
+    released_assignment_ids = []
+    changed_resource_ids = []
+    skipped = []
+
+    for resource in resources:
+        assignment = assignments_by_resource.get(resource.id)
+        if assignment is not None:
+            _release_assignment(db, assignment, actor_id, reason_text, now)
+            made_available += 1
+            released_assignment_ids.append(str(assignment.id))
+            changed_resource_ids.append(str(resource.id))
+            continue
+
+        if resource.availability == "AVAILABLE":
+            already_available += 1
+            continue
+        if not resource.department.is_active:
+            skipped.append({
+                "resource_id": resource.id,
+                "code": resource.code,
+                "reason": "The owning department is inactive.",
+            })
+            continue
+        if resource.resource_type is None or resource.latitude is None or resource.longitude is None:
+            skipped.append({
+                "resource_id": resource.id,
+                "code": resource.code,
+                "reason": "Complete the resource type and location before making it available.",
+            })
+            continue
+
+        previous = resource.availability
+        resource.availability = "AVAILABLE"
+        resource.updated_at = now
+        db.add(ResourceAvailabilityEvent(
+            resource_id=resource.id,
+            changed_by=actor_id,
+            previous_availability=previous,
+            new_availability="AVAILABLE",
+            reason=reason_text,
+            changed_at=now,
+        ))
+        made_available += 1
+        changed_resource_ids.append(str(resource.id))
+
+    _audit(
+        db,
+        actor_id,
+        "RESOURCES_MADE_AVAILABLE",
+        details={
+            "reason": reason_text,
+            "resource_ids": changed_resource_ids,
+            "released_assignment_ids": released_assignment_ids,
+            "already_available_count": already_available,
+            "skipped": [
+                {
+                    "resource_id": str(item["resource_id"]),
+                    "code": item["code"],
+                    "reason": item["reason"],
+                }
+                for item in skipped
+            ],
+        },
+    )
+    db.commit()
+    return {
+        "resources_made_available": made_available,
+        "already_available_count": already_available,
+        "released_assignment_count": len(released_assignment_ids),
+        "skipped": skipped,
+    }
+
+
 def _recommend_actions(facts: dict) -> tuple[list[str], list[str]]:
     actions = ["Coordinator: verify the submitted information and assess current conditions before response."]
     requirements = []
@@ -400,47 +1028,21 @@ def _recommend_actions(facts: dict) -> tuple[list[str], list[str]]:
     return actions, requirements
 
 
-def get_assigned_resource_ids(db: Session, exclude_incident_id: uuid.UUID | None = None) -> set[str]:
-    """Find resource IDs already assigned to active or approved response plans for other incidents."""
-    query = select(ResponsePlan).where(ResponsePlan.status.in_(["APPROVED", "AWAITING_APPROVAL"]))
-    if exclude_incident_id is not None:
-        query = query.where(ResponsePlan.incident_id != exclude_incident_id)
-    active_plans = db.scalars(query).all()
-    assigned = set()
-    for plan in active_plans:
-        for cand in (plan.resource_candidates or []):
-            rid = cand.get("id") or cand.get("resource_id")
-            if rid:
-                assigned.add(str(rid))
-        if plan.response_option and isinstance(plan.response_option, dict):
-            for res in plan.response_option.get("resources", []):
-                rid = res.get("id") or res.get("resource_id")
-                if rid:
-                    assigned.add(str(rid))
-    return assigned
-
-
 def recheck_resource_availability(
     db: Session,
     candidate_ids: list[uuid.UUID],
-    exclude_incident_id: uuid.UUID | None = None,
-) -> tuple[list[RegisteredResource], list[uuid.UUID]]:
-    """
-    Recheck resource availability against the database before finalizing the plan.
-    Detects availability changes (status changed from AVAILABLE to UNAVAILABLE/BUSY or assigned elsewhere).
-    Returns (available_resources, dropped_ids).
-    """
+) -> tuple[list[Resource], list[uuid.UUID]]:
+    """Recheck candidate state; a draft recommendation is not itself an assignment."""
     db.expire_all()
-    assigned_ids = get_assigned_resource_ids(db, exclude_incident_id=exclude_incident_id)
     available_resources = []
     dropped_ids = []
 
     for cid in candidate_ids:
-        res = db.get(RegisteredResource, cid)
+        res = db.get(Resource, cid)
         if res is None:
             dropped_ids.append(cid)
             continue
-        if res.status.upper() != "AVAILABLE" or str(res.id) in assigned_ids:
+        if res.availability != "AVAILABLE" or not res.department.is_active:
             dropped_ids.append(cid)
             continue
         available_resources.append(res)
@@ -451,7 +1053,7 @@ def recheck_resource_availability(
 def evaluate_grounded_resources(
     db: Session,
     incident: Incident,
-) -> tuple[list[tuple[RegisteredResource, int, list[str]]], list[str]]:
+) -> tuple[list[tuple[Resource, int, list[str]]], list[str]]:
     """
     Evaluate registered database resources against incident constraints:
     - capabilities (required incident capabilities from requested assistance, hazards, disaster type)
@@ -467,59 +1069,12 @@ def evaluate_grounded_resources(
         "Location",
     ]
 
-    report = incident.report
-    if report.map_latitude is None or report.map_longitude is None:
-        return [], constraints_considered
-
-    report_lat = float(report.map_latitude)
-    report_lon = float(report.map_longitude)
-
-    settings = get_settings()
-    impact_area = getattr(incident, "impact_area", None)
-    if impact_area is not None and impact_area.radius_m:
-        search_radius = float(impact_area.radius_m)
-    else:
-        search_radius = float(settings.resource_search_radius_metres)
-
-    required_capabilities = _incident_capabilities(incident)
-    assigned_ids = get_assigned_resource_ids(db, exclude_incident_id=incident.id)
-
-    # Use only resources registered in the database - never invent resources
-    all_resources = list(db.scalars(select(RegisteredResource)).all())
-
-    candidates: list[tuple[RegisteredResource, int, list[str]]] = []
-    for res in all_resources:
-        # Exclude unavailable, already-assigned, inactive, busy, deployed
-        if res.status.upper() != "AVAILABLE":
-            continue
-        if str(res.id) in assigned_ids:
-            continue
-
-        # Exclude resources without coordinates or beyond search radius
-        if res.latitude is None or res.longitude is None:
-            continue
-        distance = _distance_metres(report_lat, report_lon, float(res.latitude), float(res.longitude))
-        if distance > search_radius:
-            continue
-
-        # Exclude resources with incompatible capabilities
-        res_caps = {
-            _normalise_capability(c)
-            for c in (res.capabilities or [])
-            if isinstance(c, str) and _normalise_capability(c)
-        }
-        matching = res_caps & set(required_capabilities)
-        if required_capabilities and not matching:
-            continue
-
-        candidates.append((res, distance, sorted(matching)))
-
-    candidates.sort(key=lambda item: (-len(item[2]), item[1], item[0].name.casefold()))
-    return candidates, constraints_considered
+    _, _, matches = resource_service.find_resource_matches(db, incident)
+    return matches, constraints_considered
 
 
 def _build_grounded_response_data(
-    finalized_candidates: list[tuple[RegisteredResource, int, list[str]]],
+    finalized_candidates: list[tuple[Resource, int, list[str]]],
     required_capabilities: list[str],
     search_radius: float,
 ) -> tuple[list[dict], dict, str, list[dict]]:
@@ -529,15 +1084,20 @@ def _build_grounded_response_data(
             {
                 "id": str(res.id),
                 "resource_id": str(res.id),
+                "code": res.code,
                 "name": res.name,
                 "type": res.resource_type or "Unknown",
+                "department_id": str(res.department_id),
+                "department_code": res.department.code,
+                "department_name": res.department.name,
                 "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
                 "capabilities": res.capabilities,
-                "status": res.status,
+                "status": res.availability,
                 "distance_m": dist,
                 "latitude": float(res.latitude) if res.latitude is not None else None,
                 "longitude": float(res.longitude) if res.longitude is not None else None,
                 "matching_capabilities": matching_caps,
+                "matched_capabilities": matching_caps,
             }
             for res, dist, matching_caps in finalized_candidates
         ]
@@ -546,11 +1106,15 @@ def _build_grounded_response_data(
             "resources": [
                 {
                     "resource_id": str(res.id),
+                    "code": res.code,
                     "name": res.name,
                     "type": res.resource_type or "Unknown",
+                    "department_id": str(res.department_id),
+                    "department_code": res.department.code,
+                    "department_name": res.department.name,
                     "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
                     "capabilities": res.capabilities,
-                    "status": res.status.lower(),
+                    "status": res.availability.lower(),
                     "distance_m": dist,
                 }
                 for res, dist, matching_caps in finalized_candidates
@@ -558,8 +1122,9 @@ def _build_grounded_response_data(
         }
 
         reasons = [
-            f"'{res.name}' (type: {res.resource_type or 'Unknown'}) matches required capabilities ({', '.join(matching_caps)}) "
-            f"at distance {dist}m with verified AVAILABLE status"
+            f"'{res.name}' ({res.code}, {res.department.name}; type: {res.resource_type or 'Unknown'}) "
+            f"matches required capabilities ({', '.join(matching_caps)}) at distance {dist}m "
+            f"with verified {res.availability} availability"
             for res, dist, matching_caps in finalized_candidates
         ]
         rationale = (
@@ -572,11 +1137,11 @@ def _build_grounded_response_data(
             {
                 "resource_id": str(res.id),
                 "facts": [
-                    f"Resource '{res.name}' exists in registered database (ID: {res.id}).",
-                    f"Operational availability verified (status: '{res.status}').",
+                    f"Resource '{res.name}' ({res.code}) exists in registered database under department '{res.department.name}' (ID: {res.id}).",
+                    f"Operational availability verified (availability: '{res.availability}').",
                     f"Capabilities {res.capabilities} match incident requirements: {matching_caps}.",
                     f"Location verified: coordinates ({float(res.latitude):.4f}, {float(res.longitude):.4f}), distance is {dist} metres from incident (within constraint radius {int(search_radius)} metres).",
-                    f"Resource type: {res.resource_type}" if getattr(res, "resource_type", None) else "Resource type: Unknown (not registered in database record).",
+                    f"Resource type: {res.resource_type}" if res.resource_type else "Resource type: Unknown (not registered in database record).",
                 ],
             }
             for res, dist, matching_caps in finalized_candidates
@@ -588,6 +1153,149 @@ def _build_grounded_response_data(
         evidence = []
 
     return resource_candidates, response_option, rationale, evidence
+
+
+def get_resource_recommendations(db: Session, incident: Incident) -> dict:
+    candidates, constraints_considered = evaluate_grounded_resources(db, incident)
+    candidate_ids = [resource.id for resource, _, _ in candidates]
+    available_resources, _ = recheck_resource_availability(
+        db, candidate_ids)
+    available_ids = {resource.id for resource in available_resources}
+    finalized = [item for item in candidates if item[0].id in available_ids]
+    search_radius, _, _ = resource_service.find_resource_matches(db, incident)
+    required_capabilities = _incident_capabilities(incident)
+    _, response_option, rationale, evidence = _build_grounded_response_data(
+        finalized, required_capabilities, search_radius)
+    return {
+        "response_option": response_option,
+        "constraints_considered": constraints_considered,
+        "rationale": rationale,
+        "evidence": evidence,
+    }
+
+
+def _resource_gaps(resource_candidates: list[dict], required_capabilities: list[str],
+                   requirements: list[str]) -> list[str]:
+    if not resource_candidates:
+        return [
+            "No available registered resource was found; no suitable registered resources matched the required capabilities and location constraints, so no specific responders are named or assigned.",
+            *requirements,
+        ]
+
+    covered = {
+        capability
+        for candidate in resource_candidates
+        for capability in candidate.get("matching_capabilities", [])
+    }
+    unmet = set(required_capabilities) - covered
+    gaps = []
+    if unmet:
+        gaps.append(f"Unmet incident capability requirements: {', '.join(sorted(unmet))}.")
+    gaps.extend(requirements)
+    return gaps
+
+
+def _request_groq_plan(incident: Incident, facts: dict,
+                       candidates: list[tuple[Resource, int, list[str]]],
+                       constraints: list[str]) -> tuple[GroqPlanDraft | None, str | None]:
+    settings = get_settings()
+    if not settings.groq_api_key:
+        return None, None
+
+    area = incident.impact_area
+    linked_reports = []
+    for link in incident.report_links:
+        report = link.report
+        if report.id == incident.report_id:
+            continue
+        extraction = report.extraction
+        linked_reports.append({
+            "report_id": str(report.id),
+            "relationship_type": link.relationship_type,
+            "disaster_type": report.disaster_type,
+            "description": report.description,
+            "effective_facts": (
+                dict(extraction.effective_facts) if extraction is not None else {}
+            ),
+            "location": {
+                "latitude": float(report.map_latitude) if report.map_latitude is not None else None,
+                "longitude": float(report.map_longitude) if report.map_longitude is not None else None,
+                "location_name": report.map_location_name,
+            },
+        })
+    snapshot = {
+        "incident": {
+            "id": str(incident.id),
+            "disaster_type": incident.report.disaster_type,
+            "description": incident.report.description,
+            "corrected_facts": facts,
+            "priority": {
+                "score": incident.priority_score,
+                "band": incident.priority_band,
+            },
+        },
+        "linked_reports": linked_reports,
+        "region": {
+            "latitude": float(incident.report.map_latitude),
+            "longitude": float(incident.report.map_longitude),
+            "location_name": incident.report.map_location_name,
+            "impact_area": ({
+                "geometry_type": area.geometry_type,
+                "radius_m": area.radius_m,
+                "polygon": area.polygon,
+            } if area is not None else None),
+        },
+        "constraints": constraints,
+        "eligible_resources": [
+            {
+                "id": str(resource.id),
+                "code": resource.code,
+                "name": resource.name,
+                "type": resource.resource_type,
+                "department_id": str(resource.department_id),
+                "department": resource.department.name,
+                "availability": resource.availability,
+                "capabilities": resource.capabilities,
+                "location": {
+                    "latitude": float(resource.latitude),
+                    "longitude": float(resource.longitude),
+                },
+                "distance_m": distance,
+                "matched_capabilities": matched,
+            }
+            for resource, distance, matched in candidates[:settings.groq_max_resources]
+        ],
+    }
+    allowed_ids = {str(resource.id) for resource, _, _ in candidates[:settings.groq_max_resources]}
+    for attempt in range(2):
+        try:
+            draft = generate_plan_draft(
+                snapshot,
+                api_key=settings.groq_api_key,
+                model=settings.groq_model,
+                timeout_seconds=settings.groq_timeout_seconds,
+                max_tokens=settings.groq_max_tokens,
+                temperature=settings.groq_temperature,
+            )
+        except GroqPlannerError:
+            if attempt == 0:
+                logger.info("Retrying Groq plan generation after provider failure.")
+                time.sleep(0.5)
+            continue
+
+        if (len(draft.resource_ids) != len(set(draft.resource_ids))
+                or not set(draft.resource_ids) <= allowed_ids):
+            logger.warning(
+                "Groq plan draft referenced duplicate or ineligible resource IDs "
+                "(attempt %s/2).", attempt + 1,
+            )
+            if attempt == 0:
+                time.sleep(0.5)
+            continue
+        return draft, settings.groq_model
+
+    logger.warning("Groq plan generation failed after one retry; using deterministic planning.")
+    return None, None
 
 
 def generate_response_plan(
@@ -605,17 +1313,13 @@ def generate_response_plan(
 
     facts = dict(extraction.effective_facts)
     actions, requirements = _recommend_actions(facts)
-    # 1. Grounding and Constraints Validation (FR-28)
     candidates, constraints_considered = evaluate_grounded_resources(db, incident)
-
-    # 2. Hook for simulated concurrent status change testing
     if pre_finalize_hook:
         pre_finalize_hook()
 
-    # 3. Final validation: recheck resource availability before finalizing plan
     candidate_ids = [res.id for res, _, _ in candidates]
     available_resources, dropped_ids = recheck_resource_availability(
-        db, candidate_ids, exclude_incident_id=incident.id
+        db, candidate_ids
     )
     available_id_set = {r.id for r in available_resources}
     finalized_candidates = [
@@ -623,81 +1327,45 @@ def generate_response_plan(
         if res.id in available_id_set
     ]
 
-    settings = get_settings()
-    impact_area = getattr(incident, "impact_area", None)
-    search_radius = (
-        float(impact_area.radius_m)
-        if impact_area is not None and impact_area.radius_m
-        else float(settings.resource_search_radius_metres)
-    )
+    search_radius, _, _ = resource_service.find_resource_matches(db, incident)
     required_capabilities = _incident_capabilities(incident)
+    groq_draft, groq_model = _request_groq_plan(
+        incident, facts, finalized_candidates, constraints_considered)
+    fresh_candidates, constraints_considered = evaluate_grounded_resources(db, incident)
+    fresh_ids = [candidate[0].id for candidate in fresh_candidates]
+    fresh_resources, _ = recheck_resource_availability(
+        db, fresh_ids)
+    fresh_resource_ids = {resource.id for resource in fresh_resources}
+    finalized_candidates = [
+        candidate for candidate in fresh_candidates
+        if candidate[0].id in fresh_resource_ids
+    ]
+    if groq_draft is not None:
+        selected_ids = set(groq_draft.resource_ids)
+        fresh_by_id = {str(candidate[0].id): candidate for candidate in finalized_candidates}
+        if selected_ids <= fresh_by_id.keys():
+            finalized_candidates = [
+                fresh_by_id[resource_id] for resource_id in selected_ids
+            ]
+            actions = groq_draft.recommended_actions
+            planner_provider = "GROQ"
+            rationale_override = groq_draft.rationale
+        else:
+            actions, requirements = _recommend_actions(facts)
+            planner_provider = "DETERMINISTIC"
+            groq_model = None
+            rationale_override = None
+    else:
+        planner_provider = "DETERMINISTIC"
+        groq_model = None
+        rationale_override = None
 
-    # 4. Rationale and Inspectable Evidence (FR-29)
     resource_candidates, response_option, rationale, evidence = _build_grounded_response_data(
         finalized_candidates, required_capabilities, search_radius
     )
-
-    registry_candidates = resource_service.find_plan_candidates(db, facts)
-    legacy_candidate_ids = {candidate["id"] for candidate in resource_candidates}
-    registry_candidates = [
-        candidate for candidate in registry_candidates
-        if candidate["id"] not in legacy_candidate_ids
-    ]
-    for candidate in registry_candidates:
-        matched_capabilities = candidate["matched_capabilities"]
-        resource_candidates.append({
-            **candidate,
-            "resource_id": candidate["id"],
-            "type": candidate["resource_type"],
-            "capability": ", ".join(matched_capabilities),
-            "capabilities": matched_capabilities,
-            "status": "AVAILABLE",
-            "matching_capabilities": matched_capabilities,
-        })
-        response_option["resources"].append({
-            "resource_id": candidate["id"],
-            "name": candidate["name"],
-            "type": candidate["resource_type"],
-            "capability": ", ".join(matched_capabilities),
-            "capabilities": matched_capabilities,
-            "status": "available",
-        })
-        evidence.append({
-            "resource_id": candidate["id"],
-            "facts": [
-                f"Resource '{candidate['name']}' exists in the registered department {candidate['department_name']} (ID: {candidate['id']}).",
-                "Operational availability verified (availability: 'AVAILABLE').",
-                f"Capabilities match incident requirements: {matched_capabilities}.",
-            ],
-        })
-
-    if registry_candidates:
-        registry_summary = "; ".join(
-            f"'{candidate['name']}' from {candidate['department_name']} matches "
-            f"{', '.join(candidate['matched_capabilities'])}"
-            for candidate in registry_candidates
-        )
-        if finalized_candidates:
-            rationale += f" Department-registered resources also matched: {registry_summary}."
-        else:
-            rationale = f"Recommended department-registered resources: {registry_summary}."
-
-    if finalized_candidates:
-        covered = set()
-        for _, _, matching in finalized_candidates:
-            covered.update(matching)
-        unmet = set(required_capabilities) - covered
-        gaps = []
-        if unmet:
-            gaps.append(f"Unmet incident capability requirements: {', '.join(sorted(unmet))}.")
-        gaps.extend(requirements)
-    elif registry_candidates:
-        gaps = list(requirements)
-    else:
-        gaps = [
-            "No available registered resource was found; no suitable registered resources matched the required capabilities and location constraints, so no specific responders are named or assigned.",
-            *requirements,
-        ]
+    if rationale_override:
+        rationale = rationale_override
+    gaps = _resource_gaps(resource_candidates, required_capabilities, requirements)
 
     latest_version = db.scalar(
         select(func.max(ResponsePlan.version)).where(ResponsePlan.incident_id == incident.id)
@@ -714,6 +1382,8 @@ def generate_response_plan(
         rationale=rationale,
         evidence=evidence,
         gaps=gaps,
+        planner_provider=planner_provider,
+        planner_model=groq_model,
         human_approval_required=True,
         generated_by=actor_id,
     )
@@ -733,6 +1403,9 @@ def decide_response_plan(db: Session, plan_id: uuid.UUID, actor_id: uuid.UUID,
     plan = db.get(ResponsePlan, plan_id)
     if plan is None:
         raise NotFound("Response plan not found.")
+    incident = get_incident(db, plan.incident_id)
+    if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
+        raise Conflict("Only plans for open, canonical incidents can be decided.")
     if plan.status != "AWAITING_APPROVAL":
         raise Conflict(f"Only AWAITING_APPROVAL plans can be decided (current status: {plan.status}).")
     if decision not in {"APPROVED", "REJECTED"}:

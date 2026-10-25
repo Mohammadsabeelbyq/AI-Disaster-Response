@@ -105,6 +105,42 @@ def validate_priority_thresholds(thresholds: Mapping) -> dict[str, float]:
     return values
 
 
+def priority_policy_guidance() -> dict:
+    """Expose the scoring inputs alongside admin weights for model-backed extraction."""
+    return {
+        "factor_inputs": {
+            "life_safety_risk": {
+                "source": "severity_cues",
+                "mapping": _LIFE_SAFETY_SCORES,
+                "combination": "highest matching cue",
+            },
+            "urgency": {
+                "source": "urgency",
+                "mapping": _URGENCY_SCORES,
+            },
+            "affected_population": {
+                "source": "affected_persons",
+                "mapping": "min(count / 25, 1)",
+            },
+            "hazard_level": {
+                "sources": ["hazards", "incident_category"],
+                "hazard_mapping": _HAZARD_SCORES,
+                "category_mapping": _CATEGORY_HAZARD_SCORES,
+                "combination": "highest matching hazard or category",
+            },
+            "evidence_confidence": {
+                "source": "confidence of extracted factor evidence",
+                "application": "discount the base score in proportion to uncertainty",
+            },
+        },
+        "score_method": (
+            "Normalize configured weights over factors with supported evidence, "
+            "calculate the weighted 0-100 score, then apply the evidence-confidence "
+            "adjustment and the inclusive lower-bound thresholds."
+        ),
+    }
+
+
 def _valid_confidence(confidence: object, relevant_fields: set[str]) -> list[float]:
     if not isinstance(confidence, Mapping):
         return []

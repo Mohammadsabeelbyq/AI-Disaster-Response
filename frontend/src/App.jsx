@@ -5,6 +5,7 @@ import LoginPage from './features/auth/LoginPage.jsx';
 import ImportPage from './features/reports/ImportPage.jsx';
 import ReportFormPage from './features/reports/ReportFormPage.jsx';
 import ReviewPage from './features/reports/ReviewPage.jsx';
+import ReportAnalysisPage from './features/reports/ReportAnalysisPage.jsx';
 import PriorityPolicyPage from './features/admin/PriorityPolicyPage.jsx';
 import IncidentMapPage from './features/incidents/IncidentMapPage.jsx';
 import ResourceRegistryPage from './features/resources/ResourceRegistryPage.jsx';
@@ -27,6 +28,9 @@ export default function App() {
           <Route path="/import" element={<ImportPage />} />
           {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
             <Route path="/review" element={<ReviewPage />} />
+          )}
+          {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
+            <Route path="/report-analysis" element={<ReportAnalysisPage />} />
           )}
           {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
             <Route path="/incident-map" element={<IncidentMapPage />} />

@@ -1,11 +1,12 @@
 """Pydantic schemas for report submission, import and responses."""
 import uuid
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.config import DISASTER_TYPES
+from app.schemas.resources import ResourceAssignmentOut
 
 
 class ReportCreate(BaseModel):
@@ -41,6 +42,34 @@ class ReportCreate(BaseModel):
         return v or None
 
 
+class ReportAnalysisRequest(BaseModel):
+    disaster_type: str
+    description: str = Field(min_length=1, max_length=5000)
+    location_name: str | None = Field(default=None, max_length=255)
+
+    @field_validator("disaster_type", mode="before")
+    @classmethod
+    def _normalise_type(cls, value):
+        value = str(value or "").strip().upper().replace(" ", "_")
+        if value not in DISASTER_TYPES:
+            raise ValueError(f"must be one of: {', '.join(DISASTER_TYPES)}")
+        return value
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _strip_description(cls, value):
+        if not isinstance(value, str):
+            raise ValueError("description is required")
+        return value.strip()
+
+    @field_validator("location_name", mode="before")
+    @classmethod
+    def _blank_location_to_none(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        return value or None
+
+
 class MediaOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: uuid.UUID
@@ -59,6 +88,27 @@ class ExtractedFacts(BaseModel):
     hazards: list[str] = Field(default_factory=list)
     requested_assistance: list[str] = Field(default_factory=list)
     location_mentions: list[str] = Field(default_factory=list)
+
+
+class ReportAnalysisResult(BaseModel):
+    extractor_version: str
+    analysis_status: Literal["GROQ", "UNAVAILABLE"]
+    analysis_error: str | None = None
+    facts: ExtractedFacts
+    confidence: dict[str, float] = Field(default_factory=dict)
+    evidence: dict[str, list[str]] = Field(default_factory=dict)
+    priority_policy: dict
+    priority_score: float | None = None
+    priority_band: str | None = None
+    priority_breakdown: dict = Field(default_factory=dict)
+
+
+class ReportSubmissionAnalysis(BaseModel):
+    extractor_version: str
+    facts: ExtractedFacts
+    confidence: dict[str, Annotated[float, Field(ge=0, le=1)]] = Field(default_factory=dict)
+    evidence: dict[str, list[str]] = Field(default_factory=dict)
+    reviewed_facts: ExtractedFacts
 
 
 class ExtractionReviewOut(BaseModel):
@@ -198,12 +248,15 @@ class ResponsePlanOut(BaseModel):
     rationale: str | None = None
     evidence: list[dict] = Field(default_factory=list)
     gaps: list[str]
+    planner_provider: str = "DETERMINISTIC"
+    planner_model: str | None = None
     human_approval_required: bool
     generated_by: uuid.UUID
     created_at: datetime
     decided_by: uuid.UUID | None
     decided_at: datetime | None
     decision_reason: str | None
+    assignments: list[ResourceAssignmentOut] = Field(default_factory=list)
 
 
 class IncidentReportSummaryOut(BaseModel):
@@ -257,6 +310,15 @@ class PlanDecision(BaseModel):
 
 
 class IncidentRelationshipDecision(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
+
+
+class IncidentLifecycleDecision(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
     @field_validator("reason", mode="before")

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.config import ALLOWED_IMAGE_TYPES, get_settings
-from app.services.errors import ImageRejected
+from app.services.errors import ImageRejected, StorageFailure
 
 _SUBDIR = "incident_media"
 
@@ -71,9 +71,12 @@ def store_image(image: ValidatedImage) -> str:
     return relative
 
 
-def delete_image(storage_path: str) -> None:
-    """Best-effort cleanup used when the database write fails after the file was stored."""
+def delete_image(storage_path: str, *, strict: bool = False) -> None:
+    """Remove stored media; rollback cleanup is best-effort unless strict mode is requested."""
     try:
         absolute_path(storage_path).unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        if strict:
+            raise StorageFailure(
+                "The report was deleted, but its attached image could not be removed."
+            ) from exc

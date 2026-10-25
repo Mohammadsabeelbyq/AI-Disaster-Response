@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from app.database import SessionLocal
@@ -14,13 +15,23 @@ def _login_coordinator(client):
     })
 
 
+def _report_analysis_payload(facts, confidence=None, evidence=None):
+    return json.dumps({
+        "extractor_version": "groq-report-analysis-v1",
+        "facts": facts,
+        "confidence": confidence or {},
+        "evidence": evidence or {},
+        "reviewed_facts": facts,
+    })
+
+
 def test_coordinator_confirms_report_generates_grounded_plan_and_approves(client, valid_form):
     submitted = client.post("/reports", data=valid_form).json()
     assert _login_coordinator(client).status_code == 200
 
-    review = client.post(f"/reports/{submitted['id']}/review")
-    assert review.status_code == 200
-    assert review.json()["status"] == "UNDER_REVIEW"
+    removed_review_step = client.post(f"/reports/{submitted['id']}/review")
+    assert removed_review_step.status_code == 405
+    assert client.get(f"/reports/{submitted['id']}").json()["status"] == "SUBMITTED"
 
     corrected = {**submitted["extraction"]["extracted_facts"]}
     corrected.update({
@@ -74,7 +85,7 @@ def test_coordinator_confirms_report_generates_grounded_plan_and_approves(client
             | (WorkflowAudit.incident_id == uuid.UUID(incident["id"]))
         ).order_by(WorkflowAudit.created_at).all()
         assert [event.event_type for event in events] == [
-            "REPORT_REVIEW_STARTED", "INCIDENT_CONFIRMED",
+            "INCIDENT_CONFIRMED",
             "RESPONSE_PLAN_GENERATED", "RESPONSE_PLAN_APPROVED",
         ]
         assert all(event.actor_id == uuid.UUID(incident["confirmed_by"]) for event in events)
@@ -84,7 +95,6 @@ def test_coordinator_confirms_report_generates_grounded_plan_and_approves(client
 def test_dismissed_report_cannot_be_confirmed_or_planned(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").json()["status"] == "UNDER_REVIEW"
 
     dismissed = client.post(
         f"/reports/{report['id']}/dismiss", json={"reason": "Duplicate report."})
@@ -96,10 +106,84 @@ def test_dismissed_report_cannot_be_confirmed_or_planned(client, valid_form):
     with SessionLocal() as db:
         events = db.query(WorkflowAudit).filter_by(
             report_id=uuid.UUID(report["id"])).all()
+        assert [event.event_type for event in events] == ["REPORT_DISMISSED"]
+        assert events[0].details["reason"] == "Duplicate report."
+
+
+def test_coordinator_can_reopen_dismissed_report_to_submitted_with_reason(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    assert _login_coordinator(client).status_code == 200
+    dismissed = client.post(
+        f"/reports/{report['id']}/dismiss",
+        json={"reason": "Initially considered a duplicate."},
+    )
+    assert dismissed.status_code == 200
+
+    assert client.post(
+        f"/reports/{report['id']}/reopen", json={"reason": "  "}
+    ).status_code == 422
+    reopened = client.post(
+        f"/reports/{report['id']}/reopen",
+        json={"reason": "Coordinator verified this is a separate event."},
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["status"] == "SUBMITTED"
+    assert client.post(
+        f"/reports/{report['id']}/reopen",
+        json={"reason": "Repeated request."},
+    ).status_code == 409
+
+    assert _login_coordinator(client).status_code == 200
+    confirmed = client.post(f"/reports/{report['id']}/confirm")
+    assert confirmed.status_code == 201, confirmed.text
+
+    with SessionLocal() as db:
+        events = db.query(WorkflowAudit).filter_by(
+            report_id=uuid.UUID(report["id"]),
+        ).order_by(WorkflowAudit.created_at).all()
         assert [event.event_type for event in events] == [
-            "REPORT_REVIEW_STARTED", "REPORT_DISMISSED",
+            "REPORT_DISMISSED", "REPORT_REOPENED", "INCIDENT_CONFIRMED",
         ]
-        assert events[1].details["reason"] == "Duplicate report."
+        assert events[1].details == {
+            "reason": "Coordinator verified this is a separate event.",
+            "from": "DISMISSED",
+            "to": "SUBMITTED",
+        }
+
+
+def test_coordinator_can_close_and_reopen_incident_with_audit_reason(client, valid_form):
+    report = client.post("/reports", data=valid_form).json()
+    assert _login_coordinator(client).status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    closed = client.post(
+        f"/incidents/{incident['id']}/close",
+        json={"reason": "Incident response is complete."},
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["status"] == "CLOSED"
+
+    reopened = client.post(
+        f"/incidents/{incident['id']}/reopen",
+        json={"reason": "New reports indicate continuing danger."},
+    )
+    assert reopened.status_code == 200, reopened.text
+    assert reopened.json()["status"] == "ACTIVE"
+
+    assert client.post(
+        f"/incidents/{incident['id']}/reopen",
+        json={"reason": "Duplicate reopen attempt."},
+    ).status_code == 409
+
+    with SessionLocal() as db:
+        events = db.query(WorkflowAudit).filter_by(
+            incident_id=uuid.UUID(incident["id"]),
+        ).order_by(WorkflowAudit.created_at).all()
+        assert [event.event_type for event in events] == [
+            "INCIDENT_CONFIRMED", "INCIDENT_CLOSED", "INCIDENT_REOPENED",
+        ]
+        assert events[1].details["reason"] == "Incident response is complete."
+        assert events[2].details["reason"] == "New reports indicate continuing danger."
 
 
 def test_coordinator_links_report_without_changing_its_original_source(client, valid_form):
@@ -109,7 +193,6 @@ def test_coordinator_links_report_without_changing_its_original_source(client, v
         "description": "A second caller reports water at the same location.",
     }).json()
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{primary['id']}/review").status_code == 200
     incident = client.post(f"/reports/{primary['id']}/confirm").json()
 
     linked = client.post(
@@ -139,29 +222,46 @@ def test_coordinator_links_report_without_changing_its_original_source(client, v
         f"/incidents/{incident['id']}/reports/{related['id']}/link",
         json={"reason": "Duplicate attempt."},
     ).status_code == 409
+    unlinked = client.post(
+        f"/incidents/{incident['id']}/reports/{related['id']}/unlink",
+        json={"reason": "Coordinator confirmed these reports are distinct."},
+    )
+    assert unlinked.status_code == 200, unlinked.text
+    restored_report = client.get(f"/reports/{related['id']}").json()
+    assert restored_report["status"] == "SUBMITTED"
+    assert restored_report["incident_links"] == []
 
 
-def test_coordinator_merges_incidents_and_keeps_both_original_reports(client, valid_form):
+def test_coordinator_links_confirmed_incident_to_canonical_and_keeps_history(client, valid_form):
     primary = client.post("/reports", data=valid_form).json()
     duplicate = client.post("/reports", data={
         **valid_form,
         "description": "Another original source report for the same flood.",
     }).json()
+    source_related = client.post("/reports", data={
+        **valid_form,
+        "description": "A third caller reports water near the duplicate incident.",
+    }).json()
     assert _login_coordinator(client).status_code == 200
-    for report in (primary, duplicate):
-        assert client.post(f"/reports/{report['id']}/review").status_code == 200
     canonical = client.post(f"/reports/{primary['id']}/confirm").json()
     duplicate_incident = client.post(f"/reports/{duplicate['id']}/confirm").json()
+    assert client.post(
+        f"/incidents/{duplicate_incident['id']}/reports/{source_related['id']}/link",
+        json={"reason": "This report belongs to the duplicate incident."},
+    ).status_code == 200
 
-    merged = client.post(
-        f"/incidents/{duplicate_incident['id']}/merge-into/{canonical['id']}",
+    linked = client.post(
+        f"/incidents/{canonical['id']}/reports/{duplicate['id']}/link",
         json={"reason": "Coordinator verified both reports describe one flood."},
     )
-    assert merged.status_code == 200, merged.text
-    relation = merged.json()["report_links"][0]
+    assert linked.status_code == 200, linked.text
+    relation = next(
+        item for item in linked.json()["report_links"]
+        if item["report_id"] == duplicate["id"]
+    )
     assert relation["report_id"] == duplicate["id"]
     assert relation["source_incident_id"] == duplicate_incident["id"]
-    assert relation["relationship_type"] == "MERGED_INCIDENT"
+    assert relation["relationship_type"] == "LINKED_REPORT"
 
     original_report = client.get(f"/reports/{duplicate['id']}")
     assert original_report.status_code == 200
@@ -178,6 +278,10 @@ def test_coordinator_merges_incidents_and_keeps_both_original_reports(client, va
     assert archived.status_code == 200
     assert archived.json()["status"] == "MERGED"
     assert archived.json()["merged_into_id"] == canonical["id"]
+    assert client.post(
+        f"/incidents/{duplicate_incident['id']}/merge-into/{canonical['id']}",
+        json={"reason": "This separate action was removed."},
+    ).status_code == 405
 
     assert client.post("/auth/logout").status_code == 204
     assert client.post("/auth/login", json={
@@ -194,16 +298,53 @@ def test_coordinator_merges_incidents_and_keeps_both_original_reports(client, va
     assert _login_coordinator(client).status_code == 200
     with SessionLocal() as db:
         event = db.query(WorkflowAudit).filter_by(
-            event_type="INCIDENT_MERGED",
+            event_type="REPORT_LINKED_TO_INCIDENT",
+            report_id=uuid.UUID(duplicate["id"]),
             incident_id=uuid.UUID(canonical["id"]),
         ).one()
         assert event.details["source_incident_id"] == duplicate_incident["id"]
+        assert event.details["source_incident_status"] == duplicate_incident["status"]
+        assert event.details["transferred_link_ids"]
         assert event.details["reason"] == "Coordinator verified both reports describe one flood."
+
+    unmerged = client.post(
+        f"/incidents/{canonical['id']}/reports/{duplicate['id']}/unlink",
+        json={"reason": "Separate incident activity was confirmed."},
+    )
+    assert unmerged.status_code == 200, unmerged.text
+    restored_source = client.get(f"/incidents/{duplicate_incident['id']}")
+    assert restored_source.status_code == 200
+    assert restored_source.json()["status"] == duplicate_incident["status"]
+    assert restored_source.json()["merged_into_id"] is None
+    restored_original = client.get(f"/reports/{duplicate['id']}").json()
+    assert restored_original["incident_links"] == []
+    restored_related = client.get(f"/reports/{source_related['id']}").json()
+    assert restored_related["incident_links"][0]["incident_id"] == duplicate_incident["id"]
+    assert restored_related["status"] == "LINKED"
 
 
 def test_admin_can_manage_priority_configuration_and_rule_versioning(client, valid_form):
     valid_form["description"] = "Flood water is rising; 12 people are trapped and need rescue."
-    report = client.post("/reports", data=valid_form).json()
+    facts = {
+        "incident_category": "FLOOD",
+        "severity_cues": ["trapped"],
+        "urgency": "CRITICAL",
+        "affected_persons": 12,
+        "hazards": ["FLOODWATER", "PEOPLE_TRAPPED"],
+        "requested_assistance": ["RESCUE"],
+        "location_mentions": ["Edappally"],
+    }
+    evidence = {
+        "severity_cues": ["trapped"],
+        "urgency": ["trapped"],
+        "affected_persons": ["12 people"],
+        "hazards": ["Flood water", "trapped"],
+    }
+    confidence = {key: 0.9 for key in evidence}
+    report = client.post("/reports", data={
+        **valid_form,
+        "analysis_payload": _report_analysis_payload(facts, confidence, evidence),
+    }).json()
     client.post("/auth/logout")
     admin_login = client.post("/auth/login", json={
         "email": "admin@example.test",
@@ -229,7 +370,6 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     assert config_body['is_active'] is True
     assert config_body['weights']['urgency'] == 0.25
 
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
     priority = client.get(f"/incidents/{incident['id']}/priority").json()
     assert priority['priority_rule_version'] == config_body['version']
@@ -257,8 +397,10 @@ def test_admin_can_manage_priority_configuration_and_rule_versioning(client, val
     assert historical_priority['priority_score'] == priority['priority_score']
     assert historical_priority['priority_band'] == priority['priority_band']
 
-    next_report = client.post('/reports', data=valid_form).json()
-    assert client.post(f"/reports/{next_report['id']}/review").status_code == 200
+    next_report = client.post('/reports', data={
+        **valid_form,
+        "analysis_payload": _report_analysis_payload(facts, confidence, evidence),
+    }).json()
     next_incident = client.post(f"/reports/{next_report['id']}/confirm").json()
     next_priority = client.get(f"/incidents/{next_incident['id']}/priority").json()
     assert next_priority['priority_rule_version'] == next_config.json()['version']
@@ -289,11 +431,29 @@ def test_confirmed_incident_persists_advisory_score_classification_and_factors(c
     from app.models.incident import Incident
 
     valid_form["description"] = "Flood water is rising; 12 people are trapped and need rescue."
-    report = client.post("/reports", data=valid_form).json()
+    facts = {
+        "incident_category": "FLOOD",
+        "severity_cues": ["trapped"],
+        "urgency": "CRITICAL",
+        "affected_persons": 12,
+        "hazards": ["FLOODWATER", "PEOPLE_TRAPPED"],
+        "requested_assistance": ["RESCUE"],
+        "location_mentions": ["Edappally"],
+    }
+    evidence = {
+        "severity_cues": ["trapped"],
+        "urgency": ["trapped"],
+        "affected_persons": ["12 people"],
+        "hazards": ["Flood water", "trapped"],
+    }
+    confidence = {key: 0.9 for key in evidence}
+    report = client.post("/reports", data={
+        **valid_form,
+        "analysis_payload": _report_analysis_payload(facts, confidence, evidence),
+    }).json()
     submitted_description = report["description"]
     submitted_facts = report["extraction"]["extracted_facts"]
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
 
     response = client.post(f"/reports/{report['id']}/confirm")
     assert response.status_code == 201
@@ -332,7 +492,6 @@ def test_confirmed_incident_persists_advisory_score_classification_and_factors(c
 def test_coordinator_can_override_priority_with_reason_and_traceability(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
     priority = client.get(f"/incidents/{incident['id']}/priority").json()
     assert priority['priority_is_overridden'] is False
@@ -355,19 +514,30 @@ def test_coordinator_can_override_priority_with_reason_and_traceability(client, 
     assert missing_reason.status_code == 422
 
 
-def test_user_cannot_start_review_or_generate_response_plans(client, valid_form):
+def test_user_cannot_confirm_reports_or_generate_response_plans(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
-    assert client.post(f"/reports/{report['id']}/review").status_code == 403
+    assert client.post(f"/reports/{report['id']}/confirm").status_code == 403
     assert client.get("/incidents").status_code == 403
     assert client.post("/incidents/00000000-0000-0000-0000-000000000000/plans").status_code == 403
 
 
 def test_incident_list_includes_saved_report_location_and_latest_priority(client, valid_form):
-    report = client.post("/reports", data=valid_form).json()
+    facts = {
+        "incident_category": "FLOOD",
+        "severity_cues": ["trapped"],
+        "urgency": "CRITICAL",
+        "affected_persons": None,
+        "hazards": ["FLOODWATER", "PEOPLE_TRAPPED"],
+        "requested_assistance": ["RESCUE"],
+        "location_mentions": ["Edappally"],
+    }
+    report = client.post("/reports", data={
+        **valid_form,
+        "analysis_payload": _report_analysis_payload(facts),
+    }).json()
     assert client.post("/auth/logout").status_code == 204
     assert client.get("/incidents").status_code == 401
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
 
     listed = client.get("/incidents")
@@ -398,7 +568,6 @@ def test_incident_list_includes_valid_coordinates_without_location_name(client, 
     report = client.post("/reports", data=form_without_place).json()
     assert report["location_name"] is None
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
 
     response = client.get("/incidents")
@@ -412,7 +581,6 @@ def test_incident_list_includes_valid_coordinates_without_location_name(client, 
 def test_saved_location_correction_moves_incident_map_coordinates(client, valid_form):
     report = client.post("/reports", data=valid_form).json()
     assert _login_coordinator(client).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
 
     correction = client.patch(f"/reports/{report['id']}/location", json={
@@ -440,7 +608,6 @@ def test_admin_can_review_confirm_generate_and_reject_plan(client, valid_form):
         "role": "ADMIN",
     })
     assert login.status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
     plan = client.post(f"/incidents/{incident['id']}/plans").json()
     rejected = client.post(

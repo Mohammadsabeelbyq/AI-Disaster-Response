@@ -32,6 +32,26 @@ test('calculates priority for flooded scenario with trapped people', () => {
   assert.ok(result.breakdown.risk_factors.life_safety_risk);
 });
 
+test('uses the active admin weights and thresholds for the intake preview', () => {
+  const facts = {
+    severity_cues: ['injured'],
+    urgency: 'LOW',
+    hazards: ['PEOPLE_TRAPPED'],
+  };
+  const weights = {
+    life_safety_risk: 0.05,
+    urgency: 0.05,
+    affected_population: 0.05,
+    hazard_level: 0.8,
+    evidence_confidence: 0.05,
+  };
+  const thresholds = { CRITICAL: 80, HIGH: 65, MEDIUM: 40, LOW: 0 };
+  const result = calculatePreliminaryPriority(facts, null, weights, thresholds);
+  assert.ok(result);
+  assert.equal(result.band, 'CRITICAL');
+  assert.ok(result.score > calculatePreliminaryPriority(facts).score);
+});
+
 test('handles missing factors safely', () => {
   assert.equal(calculatePreliminaryPriority({}), null);
   assert.equal(calculatePreliminaryPriority(null), null);

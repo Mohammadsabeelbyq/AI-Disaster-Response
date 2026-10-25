@@ -1,8 +1,9 @@
 """HTTP layer for incident report submission. Thin: parse the request, call a service."""
+import json
 import uuid
 
 from fastapi import APIRouter, Depends, Form, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -12,12 +13,23 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.report import (
     ExtractionCorrection,
+    IncidentRelationshipDecision,
     ImportSummary,
     ReportCreate,
+    ReportAnalysisRequest,
+    ReportAnalysisResult,
     ReportLocationCorrectionInput,
     ReportOut,
+    ReportSubmissionAnalysis,
 )
-from app.services import extraction_service, import_service, media_service, report_service
+from app.services import (
+    extraction_service,
+    import_service,
+    incident_service,
+    media_service,
+    report_service,
+    report_analysis_service,
+)
 from app.services.errors import ImageRejected, NotFound, ValidationFailed
 
 router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
@@ -41,6 +53,14 @@ async def _read_upload(upload: UploadFile | None) -> media_service.ValidatedImag
     return media_service.validate_image(upload.filename, upload.content_type, data)
 
 
+@router.post("/analyze", response_model=ReportAnalysisResult)
+def analyze_report_intake(
+    request: ReportAnalysisRequest,
+    db: Session = Depends(get_db),
+):
+    return report_analysis_service.analyze_report(db, request)
+
+
 @router.post("", response_model=ReportOut, status_code=201)
 async def submit_report(
     disaster_type: str | None = Form(None),
@@ -48,6 +68,7 @@ async def submit_report(
     latitude: str | None = Form(None),
     longitude: str | None = Form(None),
     location_name: str | None = Form(None),
+    analysis_payload: str | None = Form(None),
     image: UploadFile | None = None,
     db: Session = Depends(get_db),
     user_id: uuid.UUID = Depends(get_current_user_id),
@@ -59,8 +80,32 @@ async def submit_report(
         data = ReportCreate.model_validate({k: v for k, v in raw.items() if v not in (None, "")})
     except ValidationError as exc:
         raise ValidationFailed("Invalid report.", import_service.format_validation_errors(exc)) from exc
+    if analysis_payload:
+        try:
+            analysis = ReportSubmissionAnalysis.model_validate_json(analysis_payload)
+        except ValidationError as exc:
+            raise ValidationFailed(
+                "Invalid report analysis.", import_service.format_validation_errors(exc)
+            ) from exc
+    else:
+        result = report_analysis_service.analyze_report(
+            db,
+            ReportAnalysisRequest(
+                disaster_type=data.disaster_type,
+                description=data.description,
+                location_name=data.location_name,
+            ),
+        )
+        analysis = ReportSubmissionAnalysis(
+            extractor_version=result.extractor_version,
+            facts=result.facts,
+            confidence=result.confidence,
+            evidence=result.evidence,
+            reviewed_facts=result.facts,
+        )
     validated_image = await _read_upload(image)  # invalid image => whole submission rejected
-    report = report_service.create_report(db, data, validated_image, submitted_by=user_id)
+    report = report_service.create_report(
+        db, data, validated_image, submitted_by=user_id, analysis=analysis)
     user = db.get(User, user_id)
     return _report_response(report, user)
 
@@ -94,6 +139,17 @@ def get_report(report_id: uuid.UUID, db: Session = Depends(get_db),
     if user.role == "USER" and report.submitted_by != user.id:
         raise NotFound("Report not found.")
     return _report_response(report, user)
+
+
+@router.delete("/{report_id}", status_code=204)
+def delete_report(
+    report_id: uuid.UUID,
+    decision: IncidentRelationshipDecision,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_roles("MANAGEMENT", "ADMIN")),
+):
+    incident_service.delete_report(db, report_id, user.id, decision.reason)
+    return Response(status_code=204)
 
 
 @router.patch("/{report_id}/extraction", response_model=ReportOut)

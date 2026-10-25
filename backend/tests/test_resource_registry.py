@@ -116,7 +116,6 @@ def test_resource_candidates_in_response_plan_use_registered_current_state(clien
         availability="UNAVAILABLE")).json()
 
     assert _login(client, "MANAGEMENT").status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm").json()
     plan = client.post(f"/incidents/{incident['id']}/plans")
     assert plan.status_code == 201, plan.text
@@ -137,3 +136,87 @@ def test_resource_candidates_in_response_plan_use_registered_current_state(clien
 
     assert _login(client, "USER").status_code == 200
     assert client.get("/resources").status_code == 403
+
+
+def test_plan_capability_gaps_include_all_matching_registry_resources(client, valid_form):
+    assert _login(client, "USER").status_code == 200
+    report = client.post("/reports", data={
+        **valid_form,
+        "disaster_type": "OTHER",
+        "description": "Requesting rescue and medical support.",
+    }).json()
+
+    assert _login(client, "ADMIN").status_code == 200
+    department_response = client.post("/departments", json={
+        "code": "DEP-MEDICAL",
+        "name": "Medical Response",
+        "department_type": "MEDICAL",
+    })
+    assert department_response.status_code == 201
+    department = department_response.json()
+    rescue_response = client.post("/resources", json=_resource_payload(
+        department["id"], code="RES-RESCUE", capabilities=["RESCUE"]
+    ))
+    medical_response = client.post("/resources", json=_resource_payload(
+        department["id"], code="RES-MEDICAL", capabilities=["MEDICAL"]
+    ))
+    assert rescue_response.status_code == 201, rescue_response.text
+    assert medical_response.status_code == 201, medical_response.text
+
+    assert _login(client, "MANAGEMENT").status_code == 200
+    facts = {**report["extraction"]["extracted_facts"],
+             "requested_assistance": ["RESCUE", "MEDICAL"]}
+    assert client.patch(f"/reports/{report['id']}/extraction", json={
+        "facts": facts,
+    }).status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    plan = client.post(f"/incidents/{incident['id']}/plans")
+    assert plan.status_code == 201, plan.text
+    assert not any(
+        "Unmet incident capability requirements" in gap
+        for gap in plan.json()["gaps"]
+    )
+
+
+def test_nearby_resources_use_active_registry_capabilities_and_current_availability(client, valid_form):
+    assert _login(client, "USER").status_code == 200
+    report = client.post("/reports", data={
+        **valid_form,
+        "description": "Flood water is rising; rescue support is needed.",
+    }).json()
+
+    assert _login(client, "ADMIN").status_code == 200
+    department = client.post("/departments", json={
+        "code": "DEP-NEARBY",
+        "name": "Nearby Response",
+        "department_type": "DISASTER_MANAGEMENT",
+    }).json()
+    available = client.post("/resources", json=_resource_payload(
+        department["id"], code="RES-NEARBY-AVAILABLE", capabilities=["RESCUE"]
+    )).json()
+    unavailable = client.post("/resources", json=_resource_payload(
+        department["id"], code="RES-NEARBY-UNAVAILABLE", capabilities=["RESCUE"],
+        availability="UNAVAILABLE",
+    )).json()
+    far_away = client.post("/resources", json=_resource_payload(
+        department["id"], code="RES-FAR-AWAY", capabilities=["RESCUE"],
+        latitude=80.0,
+    )).json()
+
+    assert _login(client, "MANAGEMENT").status_code == 200
+    facts = {**report["extraction"]["extracted_facts"],
+             "requested_assistance": ["RESCUE"]}
+    assert client.patch(f"/reports/{report['id']}/extraction", json={
+        "facts": facts,
+    }).status_code == 200
+    incident = client.post(f"/reports/{report['id']}/confirm").json()
+
+    response = client.get(
+        f"/incidents/{incident['id']}/resources?status=AVAILABLE&status=UNAVAILABLE")
+    assert response.status_code == 200, response.text
+    resources = response.json()["resources"]
+    assert {item["id"] for item in resources} == {available["id"], unavailable["id"]}
+    assert {item["availability"] for item in resources} == {"AVAILABLE", "UNAVAILABLE"}
+    assert all(item["department_name"] == department["name"] for item in resources)
+    assert far_away["id"] not in {item["id"] for item in resources}

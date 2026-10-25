@@ -1,5 +1,7 @@
 """User Story 1.1 (web form) and 1.2 (text + optional image)."""
+import json
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from pathlib import Path
 
 from app.config import get_settings
@@ -27,10 +29,11 @@ def test_text_only_report_accepted(client, valid_form):
     assert body["image"] is None
     assert body["submitted_at"].endswith("+00:00") or body["submitted_at"].endswith("Z")
     extraction = body["extraction"]
-    assert extraction["extracted_facts"]["incident_category"] == "FLOOD"
+    assert extraction["extractor_version"] == "groq-report-analysis-unavailable-v1"
+    assert extraction["extracted_facts"]["incident_category"] is None
     assert extraction["effective_facts"] == extraction["extracted_facts"]
     assert extraction["confidence"] == {}
-    assert extraction["evidence"]["incident_category"]
+    assert extraction["evidence"] == {}
     assert extraction["image_analysis_status"] == "NOT_PROVIDED"
     persisted = client.get(f"/reports/{body['id']}").json()
     assert persisted["id"] == body["id"]
@@ -40,39 +43,135 @@ def test_text_only_report_accepted(client, valid_form):
     assert persisted["longitude"] == float(valid_form["longitude"])
 
 
-def test_text_extraction_leaves_unsupported_facts_unknown(client, valid_form):
+def test_groq_unavailable_leaves_intake_facts_unknown_for_manual_entry(client, valid_form):
     valid_form["description"] = "A flood is reported near Edappally. Please send rescue and clean water for 12 people."
     body = client.post("/reports", data=valid_form).json()
     facts = body["extraction"]["extracted_facts"]
-    assert facts["urgency"] == "HIGH"
-    assert facts["affected_persons"] == 12
-    assert facts["requested_assistance"] == ["RESCUE", "WATER"]
-    assert facts["location_mentions"]
-    assert "severity_cues" not in body["extraction"]["confidence"]
+    assert body["extraction"]["extractor_version"] == "groq-report-analysis-unavailable-v1"
+    assert facts["urgency"] is None
+    assert facts["affected_persons"] is None
+    assert facts["requested_assistance"] == []
+    assert facts["location_mentions"] == []
 
 
-def test_extraction_evidence_and_confidence_are_bounded_and_traceable(client, valid_form):
-    valid_form["description"] = (
-        "Flood water is rising near Edappally. 5 people are trapped and need rescue "
-        "and clean water immediately."
+def test_intake_analysis_returns_empty_editable_facts_when_groq_is_unavailable(client, valid_form):
+    response = client.post("/reports/analyze", json={
+        "disaster_type": valid_form["disaster_type"],
+        "description": "No injury was reported.",
+        "location_name": "Edappally",
+    })
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["analysis_status"] == "UNAVAILABLE"
+    assert body["analysis_error"] == "Groq API key is not configured on the backend."
+    assert body["facts"]["severity_cues"] == []
+    assert body["facts"]["hazards"] == []
+    assert body["priority_policy"]["weights"]
+
+
+def test_intake_groq_receives_active_admin_priority_policy(client, monkeypatch):
+    from app.schemas.report import ExtractedFacts
+    from app.services import report_analysis_service
+    from app.services.groq_planner import GroqReportAnalysis
+
+    assert client.post("/auth/logout").status_code == 204
+    admin = client.post("/auth/login", json={
+        "email": "admin@example.test",
+        "password": "test-admin-password-123",
+        "role": "ADMIN",
+    })
+    assert admin.status_code == 200
+    weights = {
+        "life_safety_risk": 0.1,
+        "urgency": 0.1,
+        "affected_population": 0.1,
+        "hazard_level": 0.5,
+        "evidence_confidence": 0.2,
+    }
+    configured = client.post("/priority-configs", json={
+        "weights": weights,
+        "thresholds": {"CRITICAL": 75, "HIGH": 55, "MEDIUM": 30, "LOW": 0},
+        "notes": "Prioritize hazard evidence.",
+    })
+    assert configured.status_code == 201, configured.text
+
+    assert client.post("/auth/logout").status_code == 204
+    assert client.post("/auth/login", json={
+        "email": "user@example.test",
+        "password": "test-user-password-123",
+        "role": "USER",
+    }).status_code == 200
+    monkeypatch.setattr(report_analysis_service, "get_settings", lambda: SimpleNamespace(
+        groq_api_key="test-key",
+        groq_model="test-model",
+        groq_timeout_seconds=1,
+        groq_max_tokens=100,
+        groq_temperature=0,
+    ))
+    received = {}
+
+    def fake_groq(snapshot, **_kwargs):
+        received.update(snapshot)
+        return GroqReportAnalysis(
+            facts=ExtractedFacts(
+                incident_category="LANDSLIDE",
+                severity_cues=["injured"],
+                urgency="HIGH",
+                hazards=["INJURY"],
+                requested_assistance=["MEDICAL"],
+            ),
+            confidence={"severity_cues": 0.9, "hazards": 0.9},
+            evidence={"severity_cues": ["injured"], "hazards": ["injured"]},
+        )
+
+    monkeypatch.setattr(report_analysis_service, "generate_report_analysis", fake_groq)
+    response = client.post("/reports/analyze", json={
+        "disaster_type": "LANDSLIDE",
+        "description": "A person was injured near the road.",
+        "location_name": "Wayanad",
+    })
+    assert response.status_code == 200, response.text
+    assert received["admin_priority_policy"]["weights"] == weights
+    assert received["admin_priority_policy"]["thresholds"]["CRITICAL"] == 75
+    assert received["priority_policy_guidance"]["factor_inputs"]["hazard_level"]["hazard_mapping"]["INJURY"] == 0.75
+    assert response.json()["priority_policy"]["version"] == configured.json()["version"]
+
+
+def test_user_can_edit_groq_proposed_facts_before_report_is_saved(client, valid_form):
+    proposed = {
+        "extractor_version": "groq-report-analysis-v1",
+        "facts": {
+            "incident_category": "FLOOD",
+            "severity_cues": ["injured"],
+            "urgency": "HIGH",
+            "affected_persons": None,
+            "hazards": ["INJURY"],
+            "requested_assistance": ["MEDICAL"],
+            "location_mentions": ["Edappally"],
+        },
+        "confidence": {"severity_cues": 0.88},
+        "evidence": {"severity_cues": ["injured"]},
+        "reviewed_facts": {
+            "incident_category": "FLOOD",
+            "severity_cues": [],
+            "urgency": "LOW",
+            "affected_persons": None,
+            "hazards": [],
+            "requested_assistance": ["MEDICAL"],
+            "location_mentions": ["Edappally"],
+        },
+    }
+    response = client.post(
+        "/reports",
+        data={**valid_form, "analysis_payload": json.dumps(proposed)},
     )
-    valid_form["location_name"] = ""
-    body = client.post("/reports", data=valid_form).json()
-    extraction = body["extraction"]
-    facts = extraction["extracted_facts"]
-    confidence = extraction["confidence"]
-    evidence = extraction["evidence"]
-    source = body["description"].lower()
-
-    assert facts["incident_category"] == "FLOOD"
-    assert facts["urgency"] == "CRITICAL"
-    assert facts["affected_persons"] == 5
-    assert "Edappally" in facts["location_mentions"]
-    assert confidence == {}
-    for field, evidence_items in evidence.items():
-        assert evidence_items
-        assert all(item.lower() in source for item in evidence_items)
-        assert facts[field] not in (None, [], 0)
+    assert response.status_code == 201, response.text
+    extraction = response.json()["extraction"]
+    assert extraction["extracted_facts"]["severity_cues"] == ["injured"]
+    assert extraction["effective_facts"]["severity_cues"] == []
+    assert extraction["effective_facts"]["urgency"] == "LOW"
+    assert extraction["reviews"][0]["previous_facts"] == extraction["extracted_facts"]
+    assert extraction["reviews"][0]["corrected_facts"] == extraction["effective_facts"]
 
 
 def test_unknown_extraction_fields_have_no_confidence_or_evidence(client, valid_form):
@@ -231,8 +330,9 @@ def test_image_prediction_is_advisory_context_not_authoritative(client, valid_fo
     assert persisted["image"]["id"] == response.json()["image"]["id"]
     assert persisted["extraction"]["image_analysis_status"] == "COMPLETED"
     assert persisted["extraction"]["image_cues"] == [cue]
-    assert persisted["extraction"]["extracted_facts"]["incident_category"] == "FIRE"
-    assert persisted["extraction"]["evidence"]["incident_category"] == ["Submitted incident category: FIRE"]
+    assert persisted["extraction"]["extracted_facts"]["incident_category"] is None
+    assert "incident_category" not in persisted["extraction"]["evidence"]
+    assert "incident_category" not in persisted["extraction"]["confidence"]
     assert "image_context" in persisted["extraction"]["evidence"]
     assert "Water_Disaster" in persisted["extraction"]["evidence"]["image_context"][0]
 
@@ -336,7 +436,7 @@ def test_later_image_adds_advisory_context_without_overriding_category(client, v
         "confidence": 0.91,
         "evidence": "Predicted by the local image classifier",
     }]
-    assert body["extraction"]["extracted_facts"]["incident_category"] == "FLOOD"
+    assert body["extraction"]["extracted_facts"]["incident_category"] is None
     assert "image_context" in body["extraction"]["evidence"]
     assert "Water_Disaster" in body["extraction"]["evidence"]["image_context"][0]
     assert "incident_category" not in body["extraction"]["confidence"]

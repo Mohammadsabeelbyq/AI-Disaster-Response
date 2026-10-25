@@ -8,9 +8,9 @@ from app.api.deps import require_roles
 from app.database import get_db
 from app.models.user import User
 from app.schemas.impact_area import ImpactAreaCreate, ImpactAreaOut
-from app.schemas.resource import NearbyResourcesOut
 from app.schemas.report import (
     IncidentOut,
+    IncidentLifecycleDecision,
     IncidentRelationshipDecision,
     PriorityConfigInput,
     PriorityConfigOut,
@@ -20,6 +20,11 @@ from app.schemas.report import (
     ReportOut,
     ResponsePlanOut,
 )
+from app.schemas.resources import (
+    NearbyResourcesOut,
+    ResourceAssignmentInput,
+    ResourceAssignmentReleaseInput,
+)
 from app.services import incident_service
 from app.services import impact_area_service, resource_service
 
@@ -28,15 +33,6 @@ reports_router = APIRouter(tags=["incident-workflow"])
 incidents_router = APIRouter(prefix="/incidents", tags=["incident-workflow"])
 plans_router = APIRouter(prefix="/response-plans", tags=["response-plans"])
 priority_router = APIRouter(tags=["priority-policy"])
-
-
-@reports_router.post("/reports/{report_id}/review", response_model=ReportOut)
-def start_report_review(
-    report_id: uuid.UUID,
-    db: Session = Depends(get_db),
-    user: User = management_user,
-):
-    return incident_service.start_report_review(db, report_id, user.id)
 
 
 @reports_router.post("/reports/{report_id}/confirm", response_model=IncidentOut, status_code=201)
@@ -58,14 +54,14 @@ def link_report_to_incident(incident_id: uuid.UUID, report_id: uuid.UUID,
         db, incident_id, report_id, user.id, decision.reason)
 
 
-@incidents_router.post("/{source_incident_id}/merge-into/{target_incident_id}",
-                       response_model=IncidentOut)
-def merge_incident(source_incident_id: uuid.UUID, target_incident_id: uuid.UUID,
-                   decision: IncidentRelationshipDecision,
-                   db: Session = Depends(get_db),
-                   user: User = management_user):
-    return incident_service.merge_incident(
-        db, source_incident_id, target_incident_id, user.id, decision.reason)
+@reports_router.post("/incidents/{incident_id}/reports/{report_id}/unlink",
+                     response_model=IncidentOut)
+def unlink_report_from_incident(incident_id: uuid.UUID, report_id: uuid.UUID,
+                                decision: IncidentRelationshipDecision,
+                                db: Session = Depends(get_db),
+                                user: User = management_user):
+    return incident_service.unlink_report_from_incident(
+        db, incident_id, report_id, user.id, decision.reason)
 
 
 @reports_router.post("/reports/{report_id}/dismiss", response_model=ReportOut)
@@ -78,6 +74,17 @@ def dismiss_report(
     return incident_service.dismiss_report(db, report_id, user.id, decision.reason)
 
 
+@reports_router.post("/reports/{report_id}/reopen", response_model=ReportOut)
+def reopen_dismissed_report(
+    report_id: uuid.UUID,
+    decision: IncidentLifecycleDecision,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return incident_service.reopen_dismissed_report(
+        db, report_id, user.id, decision.reason)
+
+
 @incidents_router.get("", response_model=list[IncidentOut])
 def list_incidents(db: Session = Depends(get_db), user: User = management_user):
     return incident_service.list_incidents(db)
@@ -87,6 +94,20 @@ def list_incidents(db: Session = Depends(get_db), user: User = management_user):
 def get_incident(incident_id: uuid.UUID, db: Session = Depends(get_db),
                  user: User = management_user):
     return incident_service.get_incident(db, incident_id)
+
+
+@incidents_router.post("/{incident_id}/close", response_model=IncidentOut)
+def close_incident(incident_id: uuid.UUID, decision: IncidentLifecycleDecision,
+                   db: Session = Depends(get_db), user: User = management_user):
+    return incident_service.close_incident(
+        db, incident_id, user.id, decision.reason)
+
+
+@incidents_router.post("/{incident_id}/reopen", response_model=IncidentOut)
+def reopen_incident(incident_id: uuid.UUID, decision: IncidentLifecycleDecision,
+                    db: Session = Depends(get_db), user: User = management_user):
+    return incident_service.reopen_incident(
+        db, incident_id, user.id, decision.reason)
 
 
 @incidents_router.get("/{incident_id}/impact-area", response_model=ImpactAreaOut | None)
@@ -176,34 +197,7 @@ def get_incident_recommendations(
     user: User = management_user,
 ):
     incident = incident_service.get_incident(db, incident_id)
-    candidates, constraints_considered = incident_service.evaluate_grounded_resources(db, incident)
-    candidate_ids = [res.id for res, _, _ in candidates]
-    available_resources, _ = incident_service.recheck_resource_availability(
-        db, candidate_ids, exclude_incident_id=incident.id
-    )
-    available_id_set = {r.id for r in available_resources}
-    finalized = [(r, d, m) for r, d, m in candidates if r.id in available_id_set]
-
-    settings = incident_service.get_settings()
-    impact_area = getattr(incident, "impact_area", None)
-    search_radius = (
-        float(impact_area.radius_m)
-        if impact_area is not None and impact_area.radius_m
-        else float(settings.resource_search_radius_metres)
-    )
-    required_capabilities = incident_service._incident_capabilities(incident)
-
-    resource_candidates, response_option, rationale, evidence = incident_service._build_grounded_response_data(
-        finalized, required_capabilities, search_radius
-    )
-
-    return {
-        "incident_id": incident.id,
-        "response_option": response_option,
-        "constraints_considered": constraints_considered,
-        "rationale": rationale,
-        "evidence": evidence,
-    }
+    return {"incident_id": incident.id, **incident_service.get_resource_recommendations(db, incident)}
 
 
 @incidents_router.post("/{incident_id}/plans", response_model=ResponsePlanOut, status_code=201)
@@ -230,3 +224,29 @@ def reject_response_plan(plan_id: uuid.UUID, decision: PlanDecision,
                          db: Session = Depends(get_db), user: User = management_user):
     return incident_service.decide_response_plan(
         db, plan_id, user.id, "REJECTED", decision.reason)
+
+
+@plans_router.post("/{plan_id}/assignments", response_model=ResponsePlanOut)
+def assign_response_plan_resources(
+    plan_id: uuid.UUID,
+    payload: ResourceAssignmentInput,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return incident_service.assign_response_plan_resources(
+        db, plan_id, user.id, payload.resource_ids, payload.reason)
+
+
+@plans_router.post(
+    "/{plan_id}/assignments/{assignment_id}/release",
+    response_model=ResponsePlanOut,
+)
+def release_response_plan_assignment(
+    plan_id: uuid.UUID,
+    assignment_id: uuid.UUID,
+    payload: ResourceAssignmentReleaseInput,
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    return incident_service.release_response_plan_assignment(
+        db, plan_id, assignment_id, user.id, payload.reason)

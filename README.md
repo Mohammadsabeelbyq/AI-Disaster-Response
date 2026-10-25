@@ -2,12 +2,18 @@
 
 ## Incident Reporting, Understanding, and Coordinator Workflow
 
-Users can submit incidents through a web form or bulk-import JSON / CSV, with optional photo evidence.
-Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`) with a unique UUID and UTC submission timestamp. A separate `report_extractions` row stores evidence-linked, confidence-scored text facts. Original source fields are never overwritten by extraction or coordinator corrections.
+Users can submit incidents through a web form or bulk-import JSON / CSV, with optional photo evidence. The web form asks Groq to analyze the narrative before submission, then lets the user review and edit each proposed fact. If Groq is unavailable, fields remain unknown and can be entered manually; no rule-based injury inference is used in the web intake flow. Bulk imports and legacy backfills retain their deterministic extraction path.
+Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`) with a unique UUID and UTC submission timestamp. A separate `report_extractions` row stores the model-proposed facts, evidence and confidence; any user edits are stored as reviewed facts without overwriting the original narrative or initial proposal.
 
-The implemented slice includes Epics 1–4, original-report preservation and auditable report/incident linking and merging (Epic 5.3), plus department/resource registration and availability history (Epic 6.1–6.2). Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory; failures do not prevent an otherwise valid report from being stored.
+The implemented slice includes Epics 1–6: report intake and extraction, incident mapping and impact areas, priority and related-report review, and the department-owned resource registry with audited availability, explicit plan-linked assignments, and nearby-resource queries. Web-intake text understanding uses Groq when configured. Response planning also tries Groq first and falls back to deterministic planning if Groq is unavailable; backend resource validation remains authoritative. Image analysis is advisory; failures do not prevent an otherwise valid report from being stored.
 
-Coordinators can link an unconfirmed report to an active incident or merge a confirmed duplicate incident into a canonical incident. Reports, source descriptions, media, extractions and original incident rows are retained; the relationship and reason are recorded. Resources are persisted under registered departments, and response-plan drafts include only currently available resources with capabilities matching the report's requested assistance. Plans still require human approval; approval does not assign or dispatch resources.
+Coordinators use one **Link report to an incident** action for both unconfirmed reports and confirmed duplicate incidents. Linking a confirmed incident consolidates it under the chosen canonical incident; original reports, descriptions, media, extractions and incident history remain available, and the linking reason is recorded. Resources live in one department-owned registry. Response-plan drafts include only currently available resources with matching capabilities in the incident region. Plans still require human approval; approval does not assign or dispatch resources. In the approved-plan assignment menu, all available registry resources are listed and AI-suggested resources are highlighted. Coordinators may choose another available unit; the backend rechecks its availability and operational registry data, and audits whether each assignment was AI-suggested or coordinator-selected. Assignment and release do not execute dispatch.
+
+### Groq-backed report analysis and response planning
+
+When `GROQ_API_KEY` is configured in the ignored `backend/.env`, web intake sends the report type, description, location name, and active administrator priority policy to Groq for proposed structured facts. The policy weights and thresholds are accompanied by the scoring factor definitions. The user can edit those proposals before submission. Priority math remains deterministic and applies the active policy weights and thresholds to the final effective facts, so a model-generated score cannot bypass the configured policy. The current policy weights are factor-level (life safety, urgency, population, hazard, and evidence confidence), not separate per-hazard weights; for example, injury affects the life-safety and hazard factors.
+
+Response-plan generation tries Groq first and retries once after a provider or output-validation failure. If Groq still fails, the system uses the deterministic backend planning fallback and records which planner produced the plan. Coordinators can use **Try Groq again (new draft)** to make another attempt after a fallback (for example, after fixing the key or provider availability). Configure `GROQ_MODEL`, timeout and output limits there as needed. In either mode, resource IDs, availability, capability matches and regional filtering come from the database; Groq cannot create or assign resources. Corrected facts and descriptions from the primary and linked reports, incident category/priority, coordinates/impact area, and eligible resource details are sent to Groq. The coordinator still reviews and approves or rejects each plan; plan generation does not assign resources or dispatch responders.
 
 **Run it** (from `backend/`):
 ```bash
@@ -27,14 +33,14 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 
 ### Frontend demo: preserved reports and registered resources
 
-1. Configure `AUTH_SECRET_KEY` and local `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` values in `backend/.env`. Start the API from `backend/` with `uvicorn app.main:app --reload`.
+1. Configure `AUTH_SECRET_KEY` and local `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` values in `backend/.env`. Set `GROQ_API_KEY` there to use Groq as the first-choice planner. Start the API from `backend/` with `uvicorn app.main:app --reload`.
 2. In a second terminal, start the frontend from `frontend/` with `npm install` (first run only), then `npm run dev`. Sign in as `USER` and submit two reports for the same event, using descriptions that include a request such as “need rescue.”
-3. Sign in as `ADMIN`, open **Resources**, create a department, then register a resource with a unique code, type, capability `RESCUE`, coordinates, and `AVAILABLE` state.
-4. Sign in as `MANAGEMENT` (Coordinator), open **Review**, and confirm one report. For the other report, use **Link report** and enter a reason. Select the linked report to verify its original description is still visible and its incident relationship is shown.
-5. To demo a merge instead, review and confirm both reports separately, select the duplicate incident's original report, then use **Merge into selected** and provide a reason. The source incident is marked `MERGED`; its original report remains accessible, and the resulting incident shows the source report relationship.
-6. Generate a response-plan draft from an incident whose extracted facts request `RESCUE`. The plan shows matching, currently available registered resources. Open **Resources**, change that resource to `UNAVAILABLE` with a reason, and generate a new plan to verify it is excluded. The resource row shows the persisted availability change history.
+3. The local SQLite demo database has 12 available, named emergency resources—three each in Thrippunithura, Wayanad, Kakkanad and Kottayam. For a separate database, sign in as `ADMIN`, open **Resources**, and register your units. The default operational travel limit is 100 km (`RESOURCE_SEARCH_RADIUS_METRES`); an incident's smaller radius still narrows that limit. The optional `demo_resource_seed.py` command is only for a clean mock-only development registry; it is not needed for this demo data.
+4. Sign in as `MANAGEMENT` (Coordinator), open **Review**, then confirm or dismiss a submitted report directly. Open **Report analysis** to compare extracted facts with coordinator corrections and inspect evidence. Confirming calculates priority and enables response planning. Use **Link report to an incident** to associate an unconfirmed report or consolidate a confirmed duplicate. Use **Unlink / unmerge** to reverse that association and restore a merged incident; **Delete report** permanently removes a report and its dependent incident workflow after confirmation.
+5. Use **Generate response plan** to request a plan from Groq using corrected report facts, all linked-report context, eligible resources, and their distance from the incident. The interface identifies whether Groq or the deterministic fallback produced the draft. Review and approve/reject the plan as coordinator; approval does not dispatch. To associate two already-confirmed incidents, select the duplicate incident's original report and use the same **Link report to an incident** action to choose the canonical incident.
+6. Optionally assign selected recommended resources from an approved plan, enter an assignment reason, and assign them. The resource becomes `ASSIGNED`; no dispatch is executed. Release the assignment from the plan with a reason to restore availability. **Make all resources available** on the Resources page also releases active assignments and records the coordinator's reason in history.
 
-The demo does not seed fictional departments/resources, does not automatically merge suspected duplicates, and does not execute dispatch. Link/merge actions and availability changes persist in the configured database.
+The demo does not silently seed resources, automatically link suspected duplicates, or execute dispatch. The explicitly registered emergency resources, report links, assignments/releases, and availability changes persist in the configured database.
 
 ### Task verification
 
@@ -60,11 +66,11 @@ npm run build
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
 | Extraction and review history | `backend/app/models/extraction.py` |
 | Confirmed incidents, response plans, workflow audit | `backend/app/models/incident.py` |
-| Report/incident links and merge history | `backend/app/models/incident.py`, `backend/app/services/incident_service.py` |
-| Departments, resources and availability history | `backend/app/models/resources.py`, `backend/app/services/resource_service.py` |
+| Report/incident links and consolidated incident history | `backend/app/models/incident.py`, `backend/app/services/incident_service.py` |
+| Departments, resources, availability and assignment history | `backend/app/models/resources.py`, `backend/app/services/resource_service.py`, `backend/app/services/incident_service.py` |
 | Department/resource APIs | `backend/app/api/resources.py` |
 | Resource registry UI | `frontend/src/features/resources/ResourceRegistryPage.jsx` |
-| Review transitions and deterministic draft planning | `backend/app/services/incident_service.py`, `backend/app/api/workflow.py` |
+| Review transitions, Groq/deterministic draft planning and resource validation | `backend/app/services/incident_service.py`, `backend/app/services/groq_planner.py`, `backend/app/api/workflow.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
 | Session authentication and current user | `backend/app/api/auth.py`, `backend/app/api/deps.py` |
@@ -79,23 +85,25 @@ npm run build
 | POST | `/reports/import/json` | Bulk import, JSON body |
 | POST | `/reports/import/csv` | Bulk import, CSV body (`Content-Type: text/csv`) |
 | POST | `/reports/{id}/media` | Attach an image to an existing report |
-| POST | `/reports/{id}/review` | Move a submitted report to `UNDER_REVIEW` (MANAGEMENT/ADMIN) |
-| POST | `/reports/{id}/confirm` | Confirm an under-review report and create an incident |
-| POST | `/reports/{id}/dismiss` | Dismiss an under-review report with an optional reason |
+| POST | `/reports/{id}/confirm` | Confirm a submitted report and create an incident |
+| POST | `/reports/{id}/dismiss` | Dismiss a submitted report with an optional reason |
+| POST | `/reports/{id}/reopen` | Reopen a dismissed, unlinked report to `SUBMITTED` with a required reason (MANAGEMENT/ADMIN) |
 | POST | `/reports/{id}/potential-relationships` | Detect and save time/location-based potential report links (MANAGEMENT/ADMIN) |
 | GET | `/report-relationships?status=PROPOSED` | List potential report links for coordinator review |
 | POST | `/report-relationships/{id}/confirm` | Confirm a relationship without merging reports |
 | POST | `/report-relationships/{id}/reject` | Reject a potential relationship and record the decision |
-| POST | `/incidents/{id}/reports/{report_id}/link` | Link an unconfirmed source report to an active incident (MANAGEMENT/ADMIN) |
-| POST | `/incidents/{source_id}/merge-into/{target_id}` | Merge a confirmed incident into a canonical incident while retaining its report (MANAGEMENT/ADMIN) |
-| GET | `/incidents`, `/incidents/{id}` | List canonical incidents and read incident or merge history |
+| POST | `/incidents/{id}/reports/{report_id}/link` | Link an unconfirmed report or consolidate a confirmed incident under an active canonical incident (MANAGEMENT/ADMIN) |
+| GET | `/incidents`, `/incidents/{id}` | List canonical incidents and read incident/link history |
+| POST | `/incidents/{id}/close`, `/incidents/{id}/reopen` | Close or reopen a canonical incident with a required reason; release active assignments before closing (MANAGEMENT/ADMIN) |
 | GET / POST / PATCH | `/departments` | Read departments (MANAGEMENT/ADMIN); create/update department master data (ADMIN) |
 | GET / POST / PATCH | `/resources` | Read resources (MANAGEMENT/ADMIN); create/edit resource master data (ADMIN) |
 | PATCH | `/resources/{id}/availability` | Change current availability with a required reason (MANAGEMENT/ADMIN) |
 | POST | `/incidents/{id}/plans` | Generate a needs-based plan draft from corrected/effective facts |
 | GET | `/response-plans/{id}` | Read a response-plan draft and decision |
-| POST | `/response-plans/{id}/approve` | Record human approval; does not execute dispatch |
+| POST | `/response-plans/{id}/approve` | Record human approval; does not assign or execute dispatch |
 | POST | `/response-plans/{id}/reject` | Record human rejection |
+| POST | `/response-plans/{id}/assignments` | Assign selected recommended resources from an approved plan (MANAGEMENT/ADMIN) |
+| POST | `/response-plans/{id}/assignments/{assignment_id}/release` | Release an active resource assignment with a reason (MANAGEMENT/ADMIN) |
 | GET | `/reports`, `/reports/{id}`, `/reports/{id}/image` | Read; USER is limited to owned reports |
 
 **Report fields** (from the Master Plan §7.1): `disaster_type` (FLOOD, FIRE, EARTHQUAKE, LANDSLIDE, CYCLONE,
@@ -114,18 +122,18 @@ Failure → `{"message": "Invalid report.", "errors": ["description is required"
 The response also includes `extraction`: extracted facts, per-field confidence (0–1), source evidence, image-analysis status, optional advisory image cues, and any coordinator correction history. A missing confidence entry means the extractor did not find sufficient evidence for that field. Downstream workflows should consume `extraction.effective_facts`, which selects corrected values when present and otherwise uses the original extraction.
 
 ### Coordinator review (Epics 1.5 and 2.4–2.5)
-`MANAGEMENT` and `ADMIN` accounts can open the **Review** workspace to compare the original submission with extracted facts, evidence and confidence. Corrections are saved separately and retain before/after snapshots, actor and timestamp; the original description and first-pass extraction remain unchanged. The API is `PATCH /reports/{id}/extraction` with `{"facts": { ... }}`. Reporters receive `403` for correction attempts.
+`MANAGEMENT` and `ADMIN` accounts can open the **Review** workspace to compare the original submission with extracted facts, evidence and confidence. Corrections are saved separately and retain before/after snapshots, actor and timestamp; the original description and first-pass extraction remain unchanged. Confidence is a documented evidence-support score, not a probability. The API is `PATCH /reports/{id}/extraction` with `{"facts": { ... }}`. Reporters receive `403` for correction attempts.
 
 ### Potential report relationships
 Coordinators can run **Find potential matches** from the report review workspace. The detector proposes report pairs only when both their submission times and corrected map locations are within the configured windows. Default limits are 24 hours and 25 km; override them with `REPORT_RELATIONSHIP_TIME_WINDOW_HOURS` and `REPORT_RELATIONSHIP_RADIUS_KM`. Proposals retain the time and distance evidence used for detection. Semantic similarity is optional and off by default; enable it with `ENABLE_SEMANTIC_REPORT_MATCHING=true` and install the optional `numpy` and `sentence-transformers` packages. When enabled, the similarity score is shown as supporting evidence and does not silently decide or merge records. Coordinators confirm or reject each proposal; actor, timestamp and optional reason are recorded both on the relationship and in workflow audit history. Neither decision merges reports or creates incidents.
 
-### Optional image understanding (Epic 2.3)
-The default is off and no external service is required for Epics 1, 2.1, 2.2, 2.4 or 2.5. To enable advisory image cues, set `ENABLE_IMAGE_ANALYSIS=true`, provide a Google Gemini API key as `GEMINI_API_KEY`, and optionally override `GEMINI_MODEL` (default `gemini-2.5-flash`). Only attached images are sent to Gemini. Each returned cue includes confidence and evidence text, and remains linked to the attached image. Calls have a timeout; failures are recorded as `FAILED` and do not reject a report. When enabled, image bytes leave this deployment, so configure this only after approving the provider and data-handling policy. No API key is needed from you for the rest of Epic 2.
+### Advisory image analysis (Epic 2.3)
+When an image is attached, the bundled local six-class classifier analyzes it; no external provider or API key is used. Returned cues include classifier confidence and remain advisory evidence linked to the image. If the classifier or its weights are unavailable, the report is still stored and the analysis status is recorded as `FAILED`.
 
 ### Epic 2.1 – description fact extraction
-Accepted web-form and JSON/CSV reports receive a separate `extraction` object in report responses and `GET /reports/{id}`. The current `rules-v1` extractor returns evidence-backed candidates for disaster category, severity cues, urgency, affected-person count, hazards, requested assistance and location mentions. Each evidence item includes the exact source text and character offsets. Unsupported or conflicting values remain `null`/empty; the original submitted description and selected form fields are not overwritten. Extraction errors are logged and marked `FAILED` without rejecting a valid report.
+Accepted web-form and JSON/CSV reports receive a separate `extraction` object in report responses and `GET /reports/{id}`. The versioned rule extractor returns evidence-backed candidates for disaster category, severity cues, urgency, affected-person count, hazards, requested assistance and location mentions. Evidence contains the matched source phrases; unsupported values remain `null`/empty and receive no confidence value. Confidence is a field-level evidence-support score on a 0–1 scale, not a probability that a reported fact is true. The original submitted description and selected form fields are not overwritten.
 
-This is a deterministic, bounded MVP rather than general-purpose named-entity understanding. Location phrases are mentions only; they are not geocoded or treated as verified coordinates. Extracted values are advisory and must be reviewed before operational use. Results are stored in `report_extractions` so existing `incident_reports` tables do not need column changes. Run `./.venv/bin/python -m pytest backend/tests/test_text_extraction.py backend/tests/test_report_api.py backend/tests/test_import.py -q` from the repository root to test extraction, persistence, and failure handling.
+This is a deterministic, bounded MVP rather than general-purpose named-entity understanding. Location phrases are mentions only; the intake map search resolves a supported place query to coordinates, while text mentions are not treated as verified coordinates. Extracted values are advisory and must be reviewed before operational use. Results are stored in `report_extractions` so existing `incident_reports` tables do not need column changes. Run `.\.venv\Scripts\python.exe -m pytest backend\tests\test_report_api.py backend\tests\test_import.py -q` from the repository root to test extraction, persistence, and failure handling.
 
 ### JSON import
 ```bash
@@ -175,7 +183,7 @@ Hook it up wherever you like (e.g. after `create_report`); the submission code d
 Note: the design docs list *pgvector* for similarity – FAISS was requested, so it is kept isolated and easy to swap.
 
 ### Incident and response-plan workflow
-Coordinator/admin flow: `SUBMITTED` → `UNDER_REVIEW` → `ACCEPTED` + confirmed incident (or `DISMISSED`) → generate `AWAITING_APPROVAL` plan → approve/reject. Plan generation snapshots `extraction.effective_facts`, emits deterministic review actions, and never invents department/resource IDs. Because there is no verified department/resource registry yet, candidate assignments remain empty and the plan reports the gap. Approval records actor, time, and reason only; it does not dispatch responders.
+Coordinator/admin flow: coordinators directly confirm a `SUBMITTED` report (creating an `ACCEPTED` report and confirmed incident) or dismiss it as `DISMISSED`. A dismissed, unlinked report can be reopened with a reason to return it to `SUBMITTED`. Confirmed incidents can generate an `AWAITING_APPROVAL` plan → approve/reject → optionally assign selected recommended resources. Plan generation snapshots `extraction.effective_facts`, asks Groq first with one retry when configured, and uses deterministic rules if the LLM is unavailable. Both planners can only select database-validated resources from active departments with current `AVAILABLE` state. Approval records the human decision but does not assign or dispatch. Assignment is a separate audited action available only from an approved plan; the backend rechecks current capability, location, department and availability before atomically changing resource state. Release assignments before closing an incident. A coordinator may reopen a closed canonical incident to `ACTIVE`; close and reopen require an audited reason.
 
 ### Incident priority recommendation (ADM-23 / ADM-24)
 Confirmed incidents receive a deterministic 0–100 rules-based score, raw factor values, a weighted contribution breakdown, the policy-config version, and scoring algorithm version (`priority-v1`). The policy version identifies the immutable stored weights and thresholds; the algorithm version identifies the code-defined factor mappings and formula. Available evidence factors are normalized over only the factors present; missing or unrecognized fields do not receive made-up zero-risk values. Population is scaled as `min(affected_persons / 25, 1)`. Urgency maps `CRITICAL/HIGH/ELEVATED/LOW` to `1/.75/.5/.2`; life-safety cues and recognized hazard types use the explicit severity maps in `backend/app/services/priority_service.py`. When extraction confidence is present, only confidence belonging to source fields that contributed a recognized score factor is used; its configured weight discounts the base risk score by `(1 - weight × (1 - mean_confidence))`. Unrelated confidence fields and absent confidence have no effect. If no supported risk factor is available, the score and band remain `null`.
@@ -186,4 +194,4 @@ Default inclusive lower-bound thresholds are **CRITICAL ≥ 75**, **HIGH ≥ 55*
 - **Auth/RBAC:** Report and import endpoints require a signed session. `USER` accounts can view their own reports; `MANAGEMENT` and `ADMIN` can view all submitted reports. Incident review and plan-decision endpoints are coordinator/admin-only.
 - **Local demo accounts:** Configure `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` in the ignored `backend/.env`. Never commit that file or reuse demo passwords in production. Set `AUTH_COOKIE_SECURE=true` behind HTTPS.
 - **Schema:** tables are created by `init_db()` for dev; move to Alembic and add the `submitted_by` foreign key to `users.id`.
-- **Not done here (other owners):** department/resource registry and matching, PostGIS, plan execution/dispatch, video upload, `/reports/my`, and downstream operational workflows that consume approved plans.
+- **Not done in this demo slice:** PostGIS-backed persistence, plan execution/dispatch, video upload, `/reports/my`, department alerts, and broader downstream workflows. Resource assignments are recorded but do not dispatch responders.

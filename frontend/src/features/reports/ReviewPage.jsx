@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, ShieldAlert } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   approveResponsePlan,
+  assignResponsePlanResources,
+  closeIncident,
   confirmReport,
-  correctExtraction,
   correctReportLocation,
-  decideReportRelationship,
-  detectPotentialReportRelationships,
+  deleteReport,
   dismissReport,
   generateResponsePlan,
   getIncident,
@@ -15,40 +16,14 @@ import {
   listIncidents,
   overrideIncidentPriority,
   listReports,
-  listReportRelationships,
-  mergeIncidentInto,
   rejectResponsePlan,
-  startReportReview,
+  reopenDismissedReport,
+  reopenIncident,
+  releaseResponsePlanAssignment,
+  unlinkReportFromIncident,
 } from '../../api/reports.js';
+import { listResources } from '../../api/resources.js';
 import { validateCoordinates } from './mapLocation.js';
-
-const fields = [
-  ['severity_cues', 'Severity cues'],
-  ['hazards', 'Hazards'],
-  ['requested_assistance', 'Requested assistance'],
-  ['location_mentions', 'Location mentions'],
-];
-
-const factLabels = {
-  incident_category: 'Incident category',
-  urgency: 'Urgency',
-  affected_persons: 'Affected persons',
-  severity_cues: 'Severity cues',
-  hazards: 'Hazards',
-  requested_assistance: 'Requested assistance',
-  location_mentions: 'Location mentions',
-};
-
-function formatFactValue(value) {
-  if (value == null) return 'Unknown';
-  if (Array.isArray(value)) return value.length ? value.join(', ') : 'Unknown';
-  if (typeof value === 'number') return String(value);
-  return String(value);
-}
-
-function draftFrom(report) {
-  return { ...(report.extraction.corrected_facts || report.extraction.extracted_facts) };
-}
 
 function locationDraftFrom(report) {
   return {
@@ -59,14 +34,12 @@ function locationDraftFrom(report) {
 }
 
 export default function ReviewPage() {
+  const [searchParams] = useSearchParams();
   const [reports, setReports] = useState([]);
-  const [relationships, setRelationships] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
-  const [draft, setDraft] = useState(null);
   const [locationDraft, setLocationDraft] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [locationSaving, setLocationSaving] = useState(false);
   const [workflowBusy, setWorkflowBusy] = useState(false);
   const [message, setMessage] = useState(null);
@@ -74,132 +47,136 @@ export default function ReviewPage() {
   const [plan, setPlan] = useState(null);
   const [decisionReason, setDecisionReason] = useState('');
   const [priorityReason, setPriorityReason] = useState('');
+  const [incidentLifecycleReason, setIncidentLifecycleReason] = useState('');
+  const [assignmentReason, setAssignmentReason] = useState('');
+  const [assignmentResourceIds, setAssignmentResourceIds] = useState([]);
+  const [assignmentBusy, setAssignmentBusy] = useState(false);
+  const [assignmentResources, setAssignmentResources] = useState([]);
+  const [assignmentResourcesLoading, setAssignmentResourcesLoading] = useState(false);
   const [priorityBand, setPriorityBand] = useState('HIGH');
-  const [relationshipBusy, setRelationshipBusy] = useState(false);
-  const [relationshipReason, setRelationshipReason] = useState('');
   const [linkTargetId, setLinkTargetId] = useState('');
   const [linkReason, setLinkReason] = useState('');
-  const [mergeTargetId, setMergeTargetId] = useState('');
-  const [mergeReason, setMergeReason] = useState('');
+  const [unlinkReason, setUnlinkReason] = useState('');
+  const [deleteReason, setDeleteReason] = useState('');
   const selected = reports.find((report) => report.id === selectedId) || null;
-  const factRows = (selected?.extraction ? [
-    'incident_category', 'urgency', 'affected_persons', 'severity_cues', 'hazards', 'requested_assistance', 'location_mentions',
-  ] : []).map((key) => {
-    const extraction = selected.extraction;
-    const originalValue = extraction.extracted_facts?.[key] ?? null;
-    const correctedValue = extraction.corrected_facts?.[key] ?? null;
-    const effectiveValue = extraction.effective_facts?.[key] ?? null;
-    const evidence = extraction.evidence?.[key] || [];
-    const confidence = extraction.confidence?.[key];
-    const hasCorrection = JSON.stringify(originalValue) !== JSON.stringify(correctedValue) && correctedValue !== null;
-    return {
-      key,
-      label: factLabels[key] || key.replaceAll('_', ' '),
-      originalValue,
-      correctedValue,
-      effectiveValue,
-      evidence,
-      confidence,
-      hasCorrection,
-    };
-  }).filter(({ originalValue, correctedValue, effectiveValue }) => {
-    return originalValue !== null || correctedValue !== null || effectiveValue !== null;
-  });
-
+  const selectedIncidentLink = selected?.incident_links?.[0] || null;
+  const availableAssignmentResources = assignmentResources.filter(
+    (resource) => resource.availability === 'AVAILABLE',
+  );
+  const unassignedResourceCount = availableAssignmentResources.filter((resource) => (
+    resource.department?.is_active
+    && resource.resource_type
+    && resource.latitude != null
+    && resource.longitude != null
+  )).length;
+  const linkableIncidents = incidents.filter((item) => (
+    ['CONFIRMED', 'ACTIVE'].includes(item.status)
+    && item.merged_into_id == null
+    && item.id !== selected?.incident?.id
+  ));
+  const canLinkSelectedReport = selected
+    && !selected.incident_links?.length
+    && (
+      ['SUBMITTED', 'UNDER_REVIEW'].includes(selected.status)
+      || ['CONFIRMED', 'ACTIVE'].includes(selected.incident?.status)
+    );
+  const canUnlinkSelectedReport = Boolean(selectedIncidentLink);
   useEffect(() => {
     Promise.all([listReports(), listIncidents()]).then(([items, activeIncidents]) => {
       setReports(items);
       setIncidents(activeIncidents);
-      setLinkTargetId(activeIncidents[0]?.id || '');
+      setLinkTargetId(activeIncidents.find((item) => (
+        ['CONFIRMED', 'ACTIVE'].includes(item.status)
+      ))?.id || '');
       if (items.length) {
-        setSelectedId(items[0].id);
-        if (items[0].extraction) setDraft(draftFrom(items[0]));
-        setLocationDraft(locationDraftFrom(items[0]));
+        const requestedReport = items.find((report) => report.id === searchParams.get('reportId'));
+        const initialReport = requestedReport || items[0];
+        setSelectedId(initialReport.id);
+        setLocationDraft(locationDraftFrom(initialReport));
       }
     }).catch((error) => setMessage({ kind: 'error', text: error.message }))
       .finally(() => setLoading(false));
-    listReportRelationships().then(setRelationships)
-      .catch((error) => setMessage({ kind: 'error', text: error.message }));
-  }, []);
+  }, [searchParams]);
 
   useEffect(() => {
     let active = true;
     if (!selected?.incident?.id) {
       setIncident(null);
       setPlan(null);
+      setAssignmentResourceIds([]);
       return () => { active = false; };
     }
     getIncident(selected.incident.id).then((result) => {
       if (!active) return;
       setIncident(result);
-      setPlan(result.plans.at(-1) || null);
+      const latestPlan = result.plans.at(-1) || null;
+      setPlan(latestPlan);
+      const activeIds = new Set(
+        (latestPlan?.assignments || [])
+          .filter((assignment) => assignment.is_active)
+          .map((assignment) => assignment.resource_id),
+      );
+      setAssignmentResourceIds(
+        (latestPlan?.resource_candidates || [])
+          .map((item) => item.id)
+          .filter((id) => !activeIds.has(id)),
+      );
     }).catch((error) => active && setMessage({ kind: 'error', text: error.message }));
     return () => { active = false; };
   }, [selected?.incident?.id]);
 
+  useEffect(() => {
+    let active = true;
+    if (plan?.status !== 'APPROVED') {
+      setAssignmentResources([]);
+      setAssignmentResourcesLoading(false);
+      return () => { active = false; };
+    }
+    setAssignmentResourcesLoading(true);
+    listResources().then((resources) => {
+      if (!active) return;
+      setAssignmentResources(resources);
+      const assignableIds = new Set(resources
+        .filter((resource) => (
+          resource.availability === 'AVAILABLE'
+          && resource.department?.is_active
+          && resource.resource_type
+          && resource.latitude != null
+          && resource.longitude != null
+        ))
+        .map((resource) => resource.id));
+      setAssignmentResourceIds((current) => current.filter((id) => assignableIds.has(id)));
+    }).catch((error) => {
+      if (active) setMessage({ kind: 'error', text: error.message });
+    }).finally(() => {
+      if (active) setAssignmentResourcesLoading(false);
+    });
+    return () => { active = false; };
+  }, [plan?.id, plan?.status]);
+
   function selectReport(report) {
     setSelectedId(report.id);
-    setDraft(report.extraction ? draftFrom(report) : null);
     setLocationDraft(locationDraftFrom(report));
+    setLinkTargetId((current) => (
+      incidents.some((item) => (
+        item.id === current
+        && item.id !== report.incident?.id
+        && ['CONFIRMED', 'ACTIVE'].includes(item.status)
+      ))
+        ? current
+        : incidents.find((item) => (
+          item.id !== report.incident?.id
+          && ['CONFIRMED', 'ACTIVE'].includes(item.status)
+        ))?.id || ''
+    ));
+    setLinkReason('');
+    setUnlinkReason('');
+    setDeleteReason('');
     setMessage(null);
   }
 
   function updateReport(updated) {
     setReports((current) => current.map((report) => report.id === updated.id ? updated : report));
-  }
-
-  function setValue(key, value) {
-    setDraft((current) => ({ ...current, [key]: value }));
-  }
-
-  async function findPotentialRelationships() {
-    setRelationshipBusy(true);
-    setMessage(null);
-    try {
-      await detectPotentialReportRelationships(selectedId);
-      setRelationships(await listReportRelationships());
-      setMessage({ kind: 'success', text: 'Potential relationships refreshed. No reports were merged.' });
-    } catch (error) {
-      setMessage({ kind: 'error', text: error.message });
-    } finally {
-      setRelationshipBusy(false);
-    }
-  }
-
-  async function decideRelationship(relationshipId, decision) {
-    setRelationshipBusy(true);
-    setMessage(null);
-    try {
-      const updated = await decideReportRelationship(relationshipId, decision, relationshipReason);
-      setRelationships((current) => current.map((item) => item.id === updated.id ? updated : item));
-      setRelationshipReason('');
-      setMessage({
-        kind: 'success',
-        text: decision === 'confirm'
-          ? 'Relationship confirmed and recorded. The reports remain separate.'
-          : 'Potential relationship rejected and recorded.',
-      });
-    } catch (error) {
-      setMessage({ kind: 'error', text: error.message });
-    } finally {
-      setRelationshipBusy(false);
-    }
-  }
-
-  async function saveCorrection(event) {
-    event.preventDefault();
-    setSaving(true);
-    setMessage(null);
-    try {
-      const updated = await correctExtraction(selectedId, draft);
-      setReports((current) => current.map((report) => report.id === updated.id ? updated : report));
-      setDraft(draftFrom(updated));
-      setMessage({ kind: 'success', text: 'Correction saved with review history.' });
-    } catch (error) {
-      setMessage({ kind: 'error', text: error.message });
-    } finally {
-      setSaving(false);
-    }
   }
 
   function updateLocationCoordinate(field, value) {
@@ -233,22 +210,42 @@ export default function ReviewPage() {
 
   async function linkSelectedReport() {
     const reason = linkReason.trim();
-    if (!linkTargetId || !reason) {
+    const targetIncidentId = linkableIncidents.some((item) => item.id === linkTargetId)
+      ? linkTargetId
+      : linkableIncidents[0]?.id;
+    if (!targetIncidentId || !reason) {
       setMessage({ kind: 'error', text: 'Choose an incident and provide a reason for linking this report.' });
       return;
     }
     setWorkflowBusy(true);
     setMessage(null);
     try {
-      await linkReportToIncident(linkTargetId, selected.id, reason);
+      await linkReportToIncident(targetIncidentId, selected.id, reason);
       const [updated, target, activeIncidents] = await Promise.all([
-        getReport(selected.id), getIncident(linkTargetId), listIncidents(),
+        getReport(selected.id), getIncident(targetIncidentId), listIncidents(),
       ]);
       updateReport(updated);
       setIncident(target);
+      const latestPlan = target.plans.at(-1) || null;
+      setPlan(latestPlan);
+      const assignedResourceIds = new Set(
+        (latestPlan?.assignments || [])
+          .filter((assignment) => assignment.is_active)
+          .map((assignment) => assignment.resource_id),
+      );
+      setAssignmentResourceIds(
+        (latestPlan?.resource_candidates || [])
+          .map((resource) => resource.id)
+          .filter((id) => !assignedResourceIds.has(id)),
+      );
       setIncidents(activeIncidents);
       setLinkReason('');
-      setMessage({ kind: 'success', text: 'Original report preserved and linked to the selected incident.' });
+      setMessage({
+        kind: 'success',
+        text: selected.incident
+          ? 'Incident report linked to the selected canonical incident. Original records remain available.'
+          : 'Report linked to the selected incident. The original report remains available.',
+      });
     } catch (error) {
       setMessage({ kind: 'error', text: error.message });
     } finally {
@@ -256,25 +253,79 @@ export default function ReviewPage() {
     }
   }
 
-  async function mergeSelectedIncident() {
-    const reason = mergeReason.trim();
-    if (!incident || !mergeTargetId || !reason) {
-      setMessage({ kind: 'error', text: 'Choose a canonical incident and provide a reason for merging.' });
+  async function unlinkSelectedReport() {
+    const reason = unlinkReason.trim();
+    if (!selectedIncidentLink || !reason) {
+      setMessage({ kind: 'error', text: 'Provide a reason before unlinking this report.' });
       return;
     }
+    const isMerge = selected?.incident?.status === 'MERGED';
+    const confirmation = isMerge
+      ? 'Unlink this report and restore its incident as a separate open incident?'
+      : 'Remove this report from the linked incident?';
+    if (!window.confirm(confirmation)) return;
+
     setWorkflowBusy(true);
     setMessage(null);
     try {
-      await mergeIncidentInto(incident.id, mergeTargetId, reason);
-      const [updatedReport, mergedSource, activeIncidents] = await Promise.all([
-        getReport(selected.id), getIncident(incident.id), listIncidents(),
+      await unlinkReportFromIncident(
+        selectedIncidentLink.incident_id, selected.id, reason,
+      );
+      const [updated, activeIncidents] = await Promise.all([
+        getReport(selected.id),
+        listIncidents(),
       ]);
-      updateReport(updatedReport);
-      setIncident(mergedSource);
-      setPlan(null);
+      updateReport(updated);
       setIncidents(activeIncidents);
-      setMergeReason('');
-      setMessage({ kind: 'success', text: 'Incident merged into the canonical incident. Both source reports remain available.' });
+      setLinkReason('');
+      setUnlinkReason('');
+      if (updated.incident?.id) {
+        const restored = await getIncident(updated.incident.id);
+        setIncident(restored);
+        setPlan(restored.plans.at(-1) || null);
+      } else {
+        setIncident(null);
+        setPlan(null);
+      }
+      setMessage({
+        kind: 'success',
+        text: isMerge
+          ? 'The incident was unmerged and restored as a separate open incident.'
+          : 'The report was unlinked and returned to the submitted queue.',
+      });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }
+
+  async function deleteSelectedReport() {
+    const reason = deleteReason.trim();
+    if (!reason) {
+      setMessage({ kind: 'error', text: 'Provide a reason before deleting this report.' });
+      return;
+    }
+    if (!window.confirm(
+      'Permanently delete this report and its incident workflow? Active assignments will be released, and other linked reports will return to the submitted queue.',
+    )) return;
+
+    setWorkflowBusy(true);
+    setMessage(null);
+    try {
+      await deleteReport(selected.id, reason);
+      const [nextReports, activeIncidents] = await Promise.all([
+        listReports(),
+        listIncidents(),
+      ]);
+      setReports(nextReports);
+      setIncidents(activeIncidents);
+      setSelectedId(nextReports[0]?.id || null);
+      setLocationDraft(nextReports[0] ? locationDraftFrom(nextReports[0]) : null);
+      setIncident(null);
+      setPlan(null);
+      setDeleteReason('');
+      setMessage({ kind: 'success', text: 'Report and its dependent incident workflow were deleted.' });
     } catch (error) {
       setMessage({ kind: 'error', text: error.message });
     } finally {
@@ -286,10 +337,7 @@ export default function ReviewPage() {
     setWorkflowBusy(true);
     setMessage(null);
     try {
-      if (action === 'review') {
-        updateReport(await startReportReview(selectedId));
-        setMessage({ kind: 'success', text: 'Report moved to UNDER_REVIEW.' });
-      } else if (action === 'confirm') {
+      if (action === 'confirm') {
         const confirmed = await confirmReport(selectedId);
         setIncident(confirmed);
         updateReport({ ...selected, status: 'ACCEPTED', incident: { id: confirmed.id, status: confirmed.status } });
@@ -302,11 +350,27 @@ export default function ReviewPage() {
         updateReport(dismissed);
         setDecisionReason('');
         setMessage({ kind: 'success', text: 'Report dismissed. It will not enter response planning.' });
+      } else if (action === 'reopen-report') {
+        const reason = decisionReason.trim();
+        if (!reason) throw new Error('Provide a reason before reopening this report.');
+        const reopened = await reopenDismissedReport(selectedId, reason);
+        updateReport(reopened);
+        setDecisionReason('');
+        setMessage({ kind: 'success', text: 'Report reopened and returned to coordinator review.' });
       } else if (action === 'generate') {
+        if (!incident || !['CONFIRMED', 'ACTIVE'].includes(incident.status)) {
+          throw new Error('Reopen the incident before generating a response plan.');
+        }
         const generated = await generateResponsePlan(incident.id);
         setPlan(generated);
+        setAssignmentResourceIds(generated.resource_candidates.map((item) => item.id));
         setIncident((current) => current ? { ...current, plans: [...current.plans, generated] } : current);
-        setMessage({ kind: 'success', text: 'Draft generated from the current corrected facts.' });
+        setMessage({
+          kind: 'success',
+          text: generated.planner_provider === 'GROQ'
+            ? `Groq generated the response-plan draft${generated.planner_model ? ` with ${generated.planner_model}` : ''}. Coordinator review is required.`
+            : 'Groq was unavailable or not configured; a deterministic fallback draft was generated. Coordinator review is required.',
+        });
       } else if (action === 'approve' || action === 'reject') {
         const decide = action === 'approve' ? approveResponsePlan : rejectResponsePlan;
         const decided = await decide(plan.id, decisionReason.trim() || null);
@@ -317,12 +381,97 @@ export default function ReviewPage() {
         } : current);
         setDecisionReason('');
         setMessage({ kind: 'success', text: action === 'approve'
-          ? 'Plan approved. No dispatch was executed.' : 'Plan rejected and recorded.' });
+          ? 'Plan approved.' : 'Plan rejected and recorded.' });
+      } else if (action === 'close' || action === 'reopen') {
+        const reason = incidentLifecycleReason.trim();
+        if (!reason) {
+          throw new Error(`Provide a reason before you ${action} this incident.`);
+        }
+        const updateStatus = action === 'close' ? closeIncident : reopenIncident;
+        const updated = await updateStatus(incident.id, reason);
+        setIncident(updated);
+        setIncidents((current) => current.map((item) => item.id === updated.id ? updated : item));
+        setIncidentLifecycleReason('');
+        setMessage({
+          kind: 'success',
+          text: action === 'close'
+            ? 'Incident closed. Reopen it if new information requires further response.'
+            : 'Incident reopened and returned to active response.',
+        });
       }
     } catch (error) {
       setMessage({ kind: 'error', text: error.message });
     } finally {
       setWorkflowBusy(false);
+    }
+  }
+
+  async function assignSelectedResources() {
+    const reason = assignmentReason.trim();
+    if (!plan || !assignmentResourceIds.length || !reason) {
+      setMessage({ kind: 'error', text: 'Select at least one available resource and provide an assignment reason.' });
+      return;
+    }
+    setAssignmentBusy(true);
+    setMessage(null);
+    try {
+      const updated = await assignResponsePlanResources(plan.id, assignmentResourceIds, reason);
+      const activeIds = new Set(
+        updated.assignments.filter((assignment) => assignment.is_active)
+          .map((assignment) => assignment.resource_id),
+      );
+      setPlan(updated);
+      setAssignmentResourceIds((current) => current.filter((id) => !activeIds.has(id)));
+      setIncident((current) => current ? {
+        ...current,
+        plans: current.plans.map((item) => item.id === updated.id ? updated : item),
+      } : current);
+      setAssignmentReason('');
+      try {
+        setAssignmentResources(await listResources());
+        setMessage({ kind: 'success', text: 'Resources assigned and recorded.' });
+      } catch (error) {
+        setMessage({
+          kind: 'error',
+          text: `Resources were assigned, but the available resource list could not be refreshed: ${error.message}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setAssignmentBusy(false);
+    }
+  }
+
+  async function releaseAssignment(assignmentId) {
+    const reason = assignmentReason.trim();
+    if (!plan || !reason) {
+      setMessage({ kind: 'error', text: 'Provide a reason before releasing this resource assignment.' });
+      return;
+    }
+    setAssignmentBusy(true);
+    setMessage(null);
+    try {
+      const updated = await releaseResponsePlanAssignment(plan.id, assignmentId, reason);
+      setPlan(updated);
+      setIncident((current) => current ? {
+        ...current,
+        plans: current.plans.map((item) => item.id === updated.id ? updated : item),
+      } : current);
+      setAssignmentReason('');
+      try {
+        setAssignmentResources(await listResources());
+        setMessage({ kind: 'success', text: 'Resource assignment released and recorded.' });
+      } catch (error) {
+        setMessage({
+          kind: 'error',
+          text: `The resource assignment was released, but the available resource list could not be refreshed: ${error.message}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setAssignmentBusy(false);
     }
   }
 
@@ -351,7 +500,7 @@ export default function ReviewPage() {
   return (
     <>
       <section className="page-heading review-heading">
-        <div><div className="eyebrow"><span className="eyebrow__line" />COORDINATOR WORKSPACE</div><h1>Report review<span className="heading-period">.</span></h1><p>Compare the original submission with evidence-backed extraction, then correct before planning.</p></div>
+        <div><div className="eyebrow"><span className="eyebrow__line" />COORDINATOR WORKSPACE</div><h1>Report review<span className="heading-period">.</span></h1><p>Confirm or dismiss reports, review linked context, and plan the response.</p></div>
         <span className="review-count">{reports.length} REPORTS</span>
       </section>
       {message && <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.kind === 'error' ? <AlertCircle size={17} /> : <Check size={17} />}{message.text}</div>}
@@ -368,7 +517,7 @@ export default function ReviewPage() {
             ))}
           </aside>
 
-          {selected && draft && locationDraft && (
+          {selected && locationDraft && (
             <div className="review-detail">
               <section className="panel source-panel">
                 <div className="panel-heading"><div><span className="section-kicker">SOURCE EVIDENCE</span><h2>Original submission</h2></div><span className="review-status">{selected.status}</span></div>
@@ -394,18 +543,26 @@ export default function ReviewPage() {
                 )}
                 {selected.image && <a className="source-image-link" href={selected.image.url} target="_blank" rel="noreferrer">Open attached image</a>}
                 <div className="workflow-actions">
-                  {selected.status === 'SUBMITTED' && <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('review')}>Start review</button>}
-                  {selected.status === 'UNDER_REVIEW' && (
+                  {['SUBMITTED', 'UNDER_REVIEW'].includes(selected.status) && (
                     <>
                       <button className="button button--primary" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('confirm')}><CircleCheck size={15} />Confirm incident</button>
                       <div className="workflow-dismiss">
                         <input aria-label="Dismissal reason" value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Dismissal reason (optional)" />
-                        <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('dismiss')}><CircleX size={15} />Dismiss</button>
+                        <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('dismiss')}><CircleX size={15} />Dismiss report</button>
                       </div>
                     </>
                   )}
                   {selected.status === 'ACCEPTED' && incident && <span className="incident-confirmed">CONFIRMED · {incident.id}</span>}
-                  {selected.status === 'DISMISSED' && <span className="incident-dismissed">DISMISSED · excluded from planning</span>}
+                  {selected.status === 'DISMISSED' && (
+                    <div className="workflow-dismiss">
+                      <span className="incident-dismissed">DISMISSED · excluded from planning</span>
+                      <input aria-label="Report reopen reason" value={decisionReason}
+                        onChange={(event) => setDecisionReason(event.target.value)}
+                        placeholder="Reason for reopening (required)" />
+                      <button className="button button--primary" type="button" disabled={workflowBusy}
+                        onClick={() => runWorkflowAction('reopen-report')}>Reopen report</button>
+                    </div>
+                  )}
                 </div>
                 {selected.incident_links?.length > 0 && (
                   <div className="report-relationship-note">
@@ -420,36 +577,43 @@ export default function ReviewPage() {
                 )}
                 {selected.incident?.status === 'MERGED' && (
                   <div className="report-relationship-note" role="status">
-                    <strong>This source incident was merged into {selected.incident.merged_into_id}.</strong>
-                    <span>The original incident and report are retained for review.</span>
+                    <strong>This report belongs to a linked incident.</strong>
+                    <span>Canonical incident: {selected.incident.merged_into_id}. The original incident and report remain available for history.</span>
                   </div>
                 )}
-                {!selected.incident && selected.incident_links?.length === 0
-                  && ['SUBMITTED', 'UNDER_REVIEW'].includes(selected.status) && (
-                    <div className="report-link-controls">
-                      <strong>Link this report to an existing incident</strong>
-                      <p>The source report stays unchanged and remains retrievable.</p>
-                      <div className="report-link-controls__row">
-                        <select aria-label="Canonical incident" value={linkTargetId} onChange={(event) => setLinkTargetId(event.target.value)}>
-                          <option value="">Choose incident</option>
-                          {incidents.map((item) => <option key={item.id} value={item.id}>{item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}</option>)}
-                        </select>
-                        <input aria-label="Report link reason" value={linkReason} onChange={(event) => setLinkReason(event.target.value)} placeholder="Reason for linking (required)" />
-                        <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={linkSelectedReport}>Link report</button>
-                      </div>
-                    </div>
-                  )}
-                {selected.incident && incident && incident.status !== 'MERGED' && (
+                {canUnlinkSelectedReport && (
                   <div className="report-link-controls">
-                    <strong>Merge duplicate incident into canonical incident</strong>
-                    <p>This retains the source incident, its report, and the recorded merge history.</p>
+                    <strong>{selected.incident?.status === 'MERGED' ? 'Unlink / unmerge incident' : 'Unlink report'}</strong>
+                    <p>{selected.incident?.status === 'MERGED'
+                      ? 'Restore the source incident and its linked reports as a separate open incident.'
+                      : 'Remove this report association and return the report to the submitted queue.'}</p>
                     <div className="report-link-controls__row">
-                      <select aria-label="Merge target incident" value={mergeTargetId} onChange={(event) => setMergeTargetId(event.target.value)}>
-                        <option value="">Choose canonical incident</option>
-                        {incidents.filter((item) => item.id !== incident.id).map((item) => <option key={item.id} value={item.id}>{item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}</option>)}
+                      <input
+                        aria-label="Reason for unlinking report"
+                        value={unlinkReason}
+                        onChange={(event) => setUnlinkReason(event.target.value)}
+                        placeholder="Reason for unlinking (required)"
+                      />
+                      <button className="button button--quiet" type="button" disabled={workflowBusy || !unlinkReason.trim()} onClick={unlinkSelectedReport}>
+                        {selected.incident?.status === 'MERGED' ? 'Unlink / unmerge' : 'Unlink report'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {canLinkSelectedReport && linkableIncidents.length > 0 && (
+                  <div className="report-link-controls">
+                    <strong>Link report to an incident</strong>
+                    <p>
+                      Link this report to the canonical incident. If it already has a confirmed incident,
+                      that incident is consolidated here while its report and history are preserved.
+                    </p>
+                    <div className="report-link-controls__row">
+                      <select aria-label="Target incident" value={linkableIncidents.some((item) => item.id === linkTargetId) ? linkTargetId : ''} onChange={(event) => setLinkTargetId(event.target.value)}>
+                        <option value="">Choose incident</option>
+                        {linkableIncidents.map((item) => <option key={item.id} value={item.id}>{item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}</option>)}
                       </select>
-                      <input aria-label="Incident merge reason" value={mergeReason} onChange={(event) => setMergeReason(event.target.value)} placeholder="Reason for merging (required)" />
-                      <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={mergeSelectedIncident}>Merge into selected</button>
+                      <input aria-label="Reason for linking report" value={linkReason} onChange={(event) => setLinkReason(event.target.value)} placeholder="Reason for linking (required)" />
+                      <button className="button button--quiet" type="button" disabled={workflowBusy || !linkableIncidents.some((item) => item.id === linkTargetId)} onClick={linkSelectedReport}>Link to incident</button>
                     </div>
                   </div>
                 )}
@@ -470,75 +634,49 @@ export default function ReviewPage() {
                     })}
                   </div>
                 )}
-              </section>
-
-              <section className="panel report-relationships">
-                <div className="panel-heading">
-                  <div><span className="section-kicker">POTENTIAL RELATIONSHIPS</span><h2>Related reports</h2></div>
-                  {selected.status !== 'DISMISSED' && (
-                    <button className="button button--quiet" type="button" disabled={relationshipBusy} onClick={findPotentialRelationships}>
-                      {relationshipBusy ? <LoaderCircle className="location-spinner" size={15} /> : null}
-                      {relationshipBusy ? 'Checking…' : 'Find potential matches'}
-                    </button>
-                  )}
+                <div className="report-delete-controls">
+                  <input
+                    aria-label="Reason for deleting report"
+                    value={deleteReason}
+                    onChange={(event) => setDeleteReason(event.target.value)}
+                    placeholder="Reason for deletion (required)"
+                  />
+                  <button className="button button--danger" type="button" disabled={workflowBusy || !deleteReason.trim()} onClick={deleteSelectedReport}>
+                    <Trash2 size={15} />Delete report
+                  </button>
                 </div>
-                <p className="relationship-safety-note">Suggestions use submission time and corrected map distance. Semantic similarity is included only when enabled. A relationship decision never merges records.</p>
-                {relationships.filter((item) => (
-                  item.report.id === selected.id || item.related_report.id === selected.id
-                )).length === 0 ? (
-                  <p className="relationship-empty">No potential relationships are available for this report.</p>
-                ) : (
-                  <div className="relationship-list">
-                    {relationships.filter((item) => (
-                      item.report.id === selected.id || item.related_report.id === selected.id
-                    )).map((item) => {
-                      const other = item.report.id === selected.id ? item.related_report : item.report;
-                      return (
-                        <article className="relationship-item" key={item.id}>
-                          <div className="relationship-item__heading">
-                            <strong>{other.disaster_type.replaceAll('_', ' ')}</strong>
-                            <span className={`relationship-status relationship-status--${item.status.toLowerCase()}`}>{item.status}</span>
-                          </div>
-                          <p>{other.description}</p>
-                          <small>{other.location_name || `${other.latitude}, ${other.longitude}`} · {new Date(other.submitted_at).toLocaleString()}</small>
-                          <div className="relationship-evidence">
-                            <span>{item.evidence.time_difference_hours} h apart</span>
-                            <span>{item.evidence.distance_km} km apart</span>
-                            {item.evidence.semantic_matching_enabled && item.evidence.semantic_similarity != null && (
-                              <span>Semantic similarity {Math.round(item.evidence.semantic_similarity * 100)}%</span>
-                            )}
-                          </div>
-                          {item.status === 'PROPOSED' ? (
-                            <div className="relationship-decision">
-                              <input
-                                aria-label="Relationship decision note"
-                                value={relationshipReason}
-                                onChange={(event) => setRelationshipReason(event.target.value)}
-                                placeholder="Decision note (optional)"
-                              />
-                              <button className="button button--primary" type="button" disabled={relationshipBusy} onClick={() => decideRelationship(item.id, 'confirm')}>Confirm link</button>
-                              <button className="button button--quiet" type="button" disabled={relationshipBusy} onClick={() => decideRelationship(item.id, 'reject')}>Reject</button>
-                            </div>
-                          ) : (
-                            <small className="relationship-decision-meta">
-                              Decision recorded {item.decided_at ? new Date(item.decided_at).toLocaleString() : ''}
-                              {item.decision_reason ? ` · ${item.decision_reason}` : ''}
-                            </small>
-                          )}
-                        </article>
-                      );
-                    })}
-                  </div>
-                )}
               </section>
 
               {incident && incident.status !== 'MERGED' && (
                 <section className="panel response-plan-panel">
                   <div className="panel-heading">
-                    <div><span className="section-kicker">DOWNSTREAM WORKFLOW</span><h2>Response planning</h2></div>
+                    <div><span className="section-kicker">DOWNSTREAM WORKFLOW</span><h2>Plan the response</h2></div>
                     <span className={`plan-status plan-status--${(plan?.status || incident.status).toLowerCase()}`}>{plan?.status || incident.status}</span>
                   </div>
+                  <details className="incident-lifecycle">
+                    <summary>Incident lifecycle</summary>
+                    <div className="plan-decision-row">
+                      <input
+                        aria-label={incident.status === 'CLOSED' ? 'Incident reopen reason' : 'Incident close reason'}
+                        value={incidentLifecycleReason}
+                        onChange={(event) => setIncidentLifecycleReason(event.target.value)}
+                        placeholder={incident.status === 'CLOSED' ? 'Reason for reopening (required)' : 'Reason for closing (required)'}
+                      />
+                      {incident.status === 'CLOSED' ? (
+                        <button className="button button--primary" type="button" disabled={workflowBusy}
+                          onClick={() => runWorkflowAction('reopen')}>Reopen incident</button>
+                      ) : ['CONFIRMED', 'ACTIVE'].includes(incident.status) ? (
+                        <button className="button button--quiet" type="button" disabled={workflowBusy}
+                          onClick={() => runWorkflowAction('close')}>Close incident</button>
+                      ) : null}
+                    </div>
+                  </details>
+                  {incident.status === 'CLOSED' && (
+                    <p className="plan-explanation">This incident is closed. Reopen it before generating plans, approving plans, or assigning resources.</p>
+                  )}
 
+                  {incident.status !== 'CLOSED' && (
+                  <>
                   <div className="priority-review-card">
                     <div className="priority-review-header">
                       <div>
@@ -557,6 +695,8 @@ export default function ReviewPage() {
                       </strong>
                     </div>
 
+                    <details className="priority-review-details">
+                      <summary>Scoring details and coordinator override</summary>
                     {incident.priority_breakdown?.risk_factors && Object.keys(incident.priority_breakdown.risk_factors).length > 0 && (
                       <div className="priority-factor-breakdown">
                         <div className="priority-factor-title">Contributing Factors Breakdown</div>
@@ -615,17 +755,25 @@ export default function ReviewPage() {
                         </button>
                       </div>
                     </div>
+                    </details>
                   </div>
 
                   {!plan ? (
                     <>
-                      <p className="plan-explanation">Generate a deterministic draft from corrected facts and currently available registered resources. The coordinator remains responsible for review; approval does not dispatch or assign responders.</p>
-                      <button className="button button--primary" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('generate')}>Generate draft plan</button>
+                      <p className="plan-explanation">Draft recommendations from this report, linked reports, and nearby available resources. Groq is tried first; the rules-based planner is used if it is unavailable. You review the draft before any assignment.</p>
+                      <button className="button button--primary plan-generate-button" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('generate')}>
+                        {workflowBusy ? <LoaderCircle className="location-spinner" size={15} /> : <ShieldAlert size={15} />}
+                        Generate response plan
+                      </button>
                     </>
                   ) : (
                     <>
-                      <div className="plan-source-facts"><strong>Facts used</strong><span>{Object.entries(plan.source_facts).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join(', ') : value ?? 'unknown'}`).join(' · ')}</span></div>
-                      
+                      <p className="plan-explanation">
+                        Planner: <strong>{plan.planner_provider === 'GROQ' ? `Groq${plan.planner_model ? ` · ${plan.planner_model}` : ''}` : 'Deterministic fallback (Groq unavailable or not configured)'}</strong>
+                      </p>
+                      <details className="plan-audit-details">
+                        <summary>Planning context and evidence</summary>
+                        <div className="plan-source-facts"><strong>Facts used</strong><span>{Object.entries(plan.source_facts).map(([key, value]) => `${key.replaceAll('_', ' ')}: ${Array.isArray(value) ? value.join(', ') : value ?? 'unknown'}`).join(' · ')}</span></div>
                       {plan.rationale && (
                         <div className="plan-rationale" style={{ marginTop: '12px', padding: '10px', background: 'var(--color-surface-subtle, #f8f9fa)', borderRadius: '6px', borderLeft: '3px solid #2b7256' }}>
                           <strong style={{ display: 'block', fontSize: '11px', color: 'var(--color-ink-strong)' }}>Planner Rationale</strong>
@@ -639,53 +787,130 @@ export default function ReviewPage() {
                         </div>
                       )}
 
-                      {plan.response_option && plan.response_option.resources && plan.response_option.resources.length > 0 && (
-                        <div className="plan-resources" style={{ marginTop: '12px' }}>
-                          <strong style={{ fontSize: '11px' }}>Recommended Registered Resources</strong>
-                          <ul style={{ margin: '6px 0 0', padding: 0, listStyle: 'none', display: 'grid', gap: '8px' }}>
-                            {plan.response_option.resources.map((res) => (
-                              <li key={res.resource_id} style={{ padding: '8px', border: '1px solid var(--color-line)', borderRadius: '4px' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                                  <strong>{res.name}</strong>
-                                  <span style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: '#e1f5fe', color: '#0277bd', fontWeight: 600 }}>{res.status.toUpperCase()}</span>
-                                </div>
-                                <div style={{ fontSize: '11px', color: 'var(--color-muted)', marginTop: '2px' }}>
-                                  Type: {res.type || 'Unknown'} · Distance: {res.distance_m != null ? `${res.distance_m}m` : 'Unknown'}
-                                </div>
-                                <div style={{ fontSize: '10px', color: 'var(--color-ink-soft)', marginTop: '2px' }}>
-                                  Capabilities: {Array.isArray(res.capabilities) ? res.capabilities.join(', ') : res.capability}
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-
                       {plan.evidence && plan.evidence.length > 0 && (
-                        <div className="plan-evidence" style={{ marginTop: '12px', padding: '10px', background: '#f5f5f5', borderRadius: '6px' }}>
-                          <strong style={{ fontSize: '11px' }}>Inspectable Evidence Facts</strong>
+                        <div className="plan-evidence">
+                          <strong>Verified resource evidence</strong>
                           {plan.evidence.map((ev) => (
-                            <div key={ev.resource_id} style={{ marginTop: '6px' }}>
-                              <small style={{ fontWeight: 600, color: 'var(--color-muted)' }}>Resource ID: {ev.resource_id}</small>
-                              <ul style={{ margin: '4px 0 0 16px', padding: 0, fontSize: '11px' }}>
-                                {ev.facts.map((fact, idx) => (
-                                  <li key={idx} style={{ marginBottom: '2px' }}>{fact}</li>
-                                ))}
-                              </ul>
+                            <div key={ev.resource_id}>
+                              <small>Resource ID: {ev.resource_id}</small>
+                              <ul>{ev.facts.map((fact, idx) => <li key={idx}>{fact}</li>)}</ul>
                             </div>
                           ))}
                         </div>
                       )}
+                      </details>
 
                       <div className="plan-action-list"><strong>Recommended coordinator actions</strong>{plan.recommended_actions.map((action) => <p key={action}>{action}</p>)}</div>
                       <div className="plan-resource-candidates">
                         <strong>Verified available resource candidates</strong>
                         {plan.resource_candidates.length ? plan.resource_candidates.map((resource) => (
-                          <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · matches {resource.matched_capabilities.join(', ')}</p>
+                          <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · {resource.distance_m} m · matches {resource.matched_capabilities.join(', ')}</p>
                         )) : <p>No available registered resource matches the reported assistance needs.</p>}
                       </div>
-                      <div className="plan-gap"><ShieldAlert size={16} /><span>{plan.gaps.join(' ')}</span></div>
-                      <p className="plan-safety-note">Approval records a human decision only. This prototype does not dispatch services or execute assignments.</p>
+                      <p className="plan-safety-note">Approval does not assign resources. Coordinators reserve available registered units separately; AI suggestions are advisory.</p>
+                      {plan.status === 'APPROVED' && (
+                        <div className="plan-assignment-controls">
+                          <strong>Assign recommended resources</strong>
+                          <p>All available registered resources are listed. AI-suggested resources are highlighted; you can also choose another unit. Availability and operational status are rechecked when you assign.</p>
+                          <div className="plan-assignment-list">
+                            {assignmentResourcesLoading ? (
+                              <p className="assignment-guidance">Loading available resources…</p>
+                            ) : availableAssignmentResources.length ? availableAssignmentResources.map((resource) => {
+                              const aiSuggested = plan.resource_candidates.some(
+                                (candidate) => candidate.id === resource.id,
+                              );
+                              const ineligibleReason = !resource.department?.is_active
+                                ? 'Department inactive'
+                                : !resource.resource_type || resource.latitude == null || resource.longitude == null
+                                  ? 'Complete resource type and location before assigning'
+                                  : null;
+                              return (
+                                <label
+                                  key={resource.id}
+                                  className={aiSuggested ? 'plan-assignment-list__suggested' : ''}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={assignmentResourceIds.includes(resource.id)}
+                                    disabled={assignmentBusy || assignmentResourcesLoading || Boolean(ineligibleReason)}
+                                    onChange={(event) => setAssignmentResourceIds((current) => (
+                                      event.target.checked
+                                        ? [...new Set([...current, resource.id])]
+                                        : current.filter((id) => id !== resource.id)
+                                    ))}
+                                  />
+                                  <span>
+                                    <b>{resource.code}</b> · {resource.name} · {resource.department.name}
+                                    <small>{resource.capabilities.join(', ')}</small>
+                                    {ineligibleReason && <small>{ineligibleReason}</small>}
+                                  </span>
+                                  {aiSuggested && <strong className="plan-assignment-list__badge">AI suggested</strong>}
+                                </label>
+                              );
+                            }) : (
+                              <p className="assignment-guidance">No currently available resources can be assigned.</p>
+                            )}
+                          </div>
+                          <input
+                            aria-label="Resource assignment reason"
+                            value={assignmentReason}
+                            onChange={(event) => setAssignmentReason(event.target.value)}
+                            placeholder="Assignment reason (required)"
+                          />
+                          {unassignedResourceCount === 0 ? (
+                            <p className="assignment-guidance" role="status">
+                              No available resources are currently eligible for assignment. Update the registry or release an active assignment.
+                            </p>
+                          ) : !assignmentResourceIds.length ? (
+                            <p className="assignment-guidance">Select at least one available resource to continue.</p>
+                          ) : !assignmentReason.trim() ? (
+                            <p className="assignment-guidance">Enter an assignment reason to continue.</p>
+                          ) : null}
+                          <button
+                            className="button button--primary"
+                            type="button"
+                            disabled={assignmentBusy || !assignmentResourceIds.length || !assignmentReason.trim()}
+                            aria-busy={assignmentBusy}
+                            onClick={assignSelectedResources}
+                          >
+                            {assignmentBusy ? (
+                              <><LoaderCircle className="location-spinner" size={15} />Assigning resources…</>
+                            ) : unassignedResourceCount === 0 ? (
+                              'No available resources'
+                            ) : (
+                              'Assign selected resources'
+                            )}
+                          </button>
+                        </div>
+                      )}
+                      {plan.assignments?.length > 0 && (
+                        <div className="plan-assignment-history">
+                          <strong>Assignment history</strong>
+                          {plan.assignments.map((assignment) => {
+                            const resource = assignmentResources.find(
+                              (item) => item.id === assignment.resource_id,
+                            ) || plan.resource_candidates.find(
+                              (item) => item.id === assignment.resource_id,
+                            );
+                            return (
+                              <div key={assignment.id}>
+                                <span>{resource?.code || assignment.resource_id} · {assignment.is_active ? 'Active' : 'Released'} · {assignment.reason}</span>
+                                {assignment.is_active && (
+                                  <button
+                                    className="button button--quiet"
+                                    type="button"
+                                    disabled={assignmentBusy}
+                                    onClick={() => releaseAssignment(assignment.id)}
+                                  >
+                                    Release
+                                  </button>
+                                )}
+                                {assignment.release_reason && <small>Release reason: {assignment.release_reason}</small>}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
                       {plan.status === 'AWAITING_APPROVAL' && (
                         <div className="plan-decision-row">
                           <input aria-label="Plan decision reason" value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="Decision note (optional)" />
@@ -693,99 +918,37 @@ export default function ReviewPage() {
                           <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('reject')}>Reject</button>
                         </div>
                       )}
-                      {plan.status === 'REJECTED' && (
+                      {['REJECTED', 'APPROVED'].includes(plan.status) && (
                         <button className="button button--primary plan-regenerate" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('generate')}>
-                          Generate revised draft
+                          {plan.status === 'APPROVED' ? 'Refresh recommendations' : 'Generate revised draft'}
+                        </button>
+                      )}
+                      {plan.planner_provider !== 'GROQ' && (
+                        <button className="button button--quiet plan-regenerate" type="button" disabled={workflowBusy}
+                          onClick={() => runWorkflowAction('generate')}>
+                          {workflowBusy ? 'Retrying…' : 'Try Groq again (new draft)'}
                         </button>
                       )}
                       {plan.decided_at && <p className="plan-decision-meta">Decision recorded {new Date(plan.decided_at).toLocaleString()}{plan.decision_reason ? ` · ${plan.decision_reason}` : ''}</p>}
                     </>
                   )}
+                  </>
+                  )}
                 </section>
               )}
 
-              <section className="panel extraction-panel">
-                <div className="panel-heading"><div><span className="section-kicker">REPORT ANALYSIS · {selected.extraction.extractor_version}</span><h2>Review extracted facts</h2></div><span className="confidence-scale">Model score: 0–1</span></div>
-
-                <div className="coordinator-note">
-                  <strong>Coordinator review</strong>
-                  <p>Correct extracted facts before planning. The original submission and first-pass extraction remain unchanged; only the effective facts used downstream are updated.</p>
-                </div>
-
-                <div className="fact-grid">
-                  {factRows.map(({ key, label, originalValue, correctedValue, effectiveValue, evidence, confidence, hasCorrection }) => (
-                    <div key={key} className={`fact-card${hasCorrection ? ' fact-card--corrected' : ''}`}>
-                      <div className="fact-card__header">
-                        <span>{label}</span>
-                        {hasCorrection && <em>Corrected</em>}
-                      </div>
-                      <div className="fact-card__stack">
-                        <div>
-                          <small>Original extraction</small>
-                          <strong>{formatFactValue(originalValue)}</strong>
-                        </div>
-                        {correctedValue !== null && (
-                          <div>
-                            <small>Coordinator value</small>
-                            <strong>{formatFactValue(correctedValue)}</strong>
-                          </div>
-                        )}
-                        <div>
-                          <small>Used for planning</small>
-                          <strong>{formatFactValue(effectiveValue)}</strong>
-                        </div>
-                      </div>
-                      {(evidence.length || confidence != null) && (
-                        <div className="fact-card__evidence">
-                          <small>Evidence</small>
-                          <ul>
-                            {evidence.length ? evidence.map((item) => <li key={`${key}-${item}`}>{item}</li>) : <li>Evidence was not recorded for this field.</li>}
-                          </ul>
-                          {confidence != null && <span className="fact-card__score">Confidence: {confidence.toFixed(2)}</span>}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="source-traceability">
-                  <h3>Evidence traceability</h3>
-                  {Object.keys(selected.extraction.evidence || {}).length ? (
-                    <div className="trace-list">
-                      {Object.entries(selected.extraction.evidence).map(([key, evidence]) => (
-                        <p key={key}><strong>{factLabels[key] || key.replaceAll('_', ' ')}</strong><span>{evidence.join(' · ')}</span></p>
-                      ))}
-                    </div>
-                  ) : (
-                    <p>No extracted evidence is available.</p>
-                  )}
-                  {selected.image && (
-                    <div className="source-traceability__image">
-                      <span className="trace-badge">Traceable to attached image</span>
-                      <a href={selected.image.url} target="_blank" rel="noreferrer">Open attached image</a>
-                    </div>
-                  )}
-                  {selected.extraction.image_analysis_status !== 'NOT_PROVIDED' && (
-                    <div className="image-analysis-state">
-                      <span>Image analysis: <strong>{selected.extraction.image_analysis_status.replaceAll('_', ' ')}</strong></span>
-                      {selected.extraction.image_cues?.length > 0 && selected.extraction.image_cues.map((cue) => (
-                        <span key={`${cue.cue}-${cue.evidence}`}>{cue.cue} ({cue.confidence.toFixed(2)}) · {cue.evidence}</span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <form onSubmit={saveCorrection}>
-                  <div className="review-fields">
-                    <label className="field"><span>Incident category</span><input value={draft.incident_category || ''} onChange={(event) => setValue('incident_category', event.target.value || null)} placeholder="Unknown" /></label>
-                    <label className="field"><span>Urgency</span><select value={draft.urgency || ''} onChange={(event) => setValue('urgency', event.target.value || null)}><option value="">Unknown</option><option value="ELEVATED">Elevated</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option></select></label>
-                    <label className="field"><span>Affected persons</span><input type="number" min="0" value={draft.affected_persons ?? ''} onChange={(event) => setValue('affected_persons', event.target.value === '' ? null : Number(event.target.value))} placeholder="Unknown" /></label>
-                    {fields.map(([key, label]) => <label className="field" key={key}><span>{label}</span><input value={(draft[key] || []).join(', ')} onChange={(event) => setValue(key, event.target.value.split(',').map((part) => part.trim()).filter(Boolean))} placeholder="Unknown" /></label>)}
+              {selected.extraction && (
+                <section className="panel report-analysis-shortcut">
+                  <div>
+                    <span className="section-kicker">REPORT ANALYSIS</span>
+                    <p>View extracted evidence, coordinator changes, and the facts used for planning.</p>
                   </div>
-                  {selected.extraction.reviewed_at && <p className="review-history-note">Last corrected {new Date(selected.extraction.reviewed_at).toLocaleString()} · {selected.extraction.reviews.length} saved review{selected.extraction.reviews.length === 1 ? '' : 's'}</p>}
-                  <div className="review-form-foot"><span className="review-safe-note">Submitted source text and first-pass extraction are preserved for audit and traceability.</span><button className="button button--primary" type="submit" disabled={saving}><Save size={16} />{saving ? 'Saving…' : 'Save correction'}</button></div>
-                </form>
-              </section>
+                  <Link className="button button--quiet" to={`/report-analysis?reportId=${encodeURIComponent(selected.id)}`}>
+                    Open report analysis
+                    {selected.extraction.reviews?.length > 0 && <span className="report-analysis-change-count">{selected.extraction.reviews.length} saved</span>}
+                  </Link>
+                </section>
+              )}
             </div>
           )}
         </div>

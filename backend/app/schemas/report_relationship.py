@@ -48,3 +48,4 @@ class ReportRelationshipOut(BaseModel):
 
 class RelationshipDecision(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
+    anchor_report_id: uuid.UUID | None = None

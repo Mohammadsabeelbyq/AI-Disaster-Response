@@ -4,6 +4,14 @@ export function submitReport(formData) {
   return request('/reports', { method: 'POST', body: formData });
 }
 
+export function analyzeReport(payload) {
+  return request('/reports/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function getReport(reportId) {
   return request(`/reports/${encodeURIComponent(reportId)}`);
 }
@@ -54,16 +62,20 @@ export function correctReportLocation(reportId, location) {
   });
 }
 
-export function startReportReview(reportId) {
-  return request(`/reports/${reportId}/review`, { method: 'POST' });
-}
-
 export function confirmReport(reportId) {
   return request(`/reports/${reportId}/confirm`, { method: 'POST' });
 }
 
 export function dismissReport(reportId, reason) {
   return request(`/reports/${reportId}/dismiss`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function reopenDismissedReport(reportId, reason) {
+  return request(`/reports/${encodeURIComponent(reportId)}/reopen`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
@@ -78,6 +90,32 @@ export function listIncidents() {
   return request('/incidents');
 }
 
+export function closeIncident(incidentId, reason) {
+  return request(`/incidents/${encodeURIComponent(incidentId)}/close`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function reopenIncident(incidentId, reason) {
+  return request(`/incidents/${encodeURIComponent(incidentId)}/reopen`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function getIncidentImpactArea(incidentId) {
+  return request(`/incidents/${encodeURIComponent(incidentId)}/impact-area`);
+}
+
+export function listNearbyResources(incidentId, statuses = ['AVAILABLE']) {
+  const query = new URLSearchParams();
+  statuses.forEach((status) => query.append('status', status));
+  return request(`/incidents/${encodeURIComponent(incidentId)}/resources?${query}`);
+}
+
 export function linkReportToIncident(incidentId, reportId, reason) {
   return request(`/incidents/${incidentId}/reports/${reportId}/link`, {
     method: 'POST',
@@ -86,9 +124,17 @@ export function linkReportToIncident(incidentId, reportId, reason) {
   });
 }
 
-export function mergeIncidentInto(sourceIncidentId, targetIncidentId, reason) {
-  return request(`/incidents/${sourceIncidentId}/merge-into/${targetIncidentId}`, {
+export function unlinkReportFromIncident(incidentId, reportId, reason) {
+  return request(`/incidents/${incidentId}/reports/${reportId}/unlink`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function deleteReport(reportId, reason) {
+  return request(`/reports/${encodeURIComponent(reportId)}`, {
+    method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
   });
@@ -124,4 +170,23 @@ export function rejectResponsePlan(planId, reason) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
   });
+}
+
+export function assignResponsePlanResources(planId, resourceIds, reason) {
+  return request(`/response-plans/${encodeURIComponent(planId)}/assignments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ resource_ids: resourceIds, reason }),
+  });
+}
+
+export function releaseResponsePlanAssignment(planId, assignmentId, reason) {
+  return request(
+    `/response-plans/${encodeURIComponent(planId)}/assignments/${encodeURIComponent(assignmentId)}/release`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason }),
+    },
+  );
 }

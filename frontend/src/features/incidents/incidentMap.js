@@ -84,10 +84,12 @@ export function getMarkerPresentation(incident) {
   const status = String(incident?.status || 'UNKNOWN').toUpperCase();
   const statusClass = /^[A-Z0-9_-]+$/.test(status) ? status.toLowerCase() : 'unknown';
   const priority = getPriorityPresentation(incident?.priority_band);
+  const awaitingDecision = priority.className === 'unrated'
+    && ['SUBMITTED', 'UNDER_REVIEW'].includes(status);
   return {
     statusClass,
     priorityClass: priority.className,
-    priorityLabel: priority.label,
+    priorityLabel: awaitingDecision ? 'Awaiting decision' : priority.label,
     priorityColor: priority.color,
     priorityTextColor: priority.textColor,
     radius: priority.radius,

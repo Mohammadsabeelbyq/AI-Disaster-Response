@@ -106,6 +106,8 @@ test('priority colors darken with increasing priority and retain readable contra
 });
 
 test('falls back safely for unknown statuses and missing priority', () => {
+  assert.equal(getMarkerPresentation({ status: 'SUBMITTED', priority_band: null }).priorityLabel, 'Awaiting decision');
+  assert.equal(getMarkerPresentation({ status: 'UNDER_REVIEW', priority_band: null }).priorityLabel, 'Awaiting decision');
   assert.deepEqual(getMarkerPresentation({ status: '<script>', priority_band: null }), {
     statusClass: 'unknown', priorityClass: 'unrated', priorityLabel: 'Unrated',
     priorityColor: '#78837D', priorityTextColor: '#FFFFFF', radius: 10,

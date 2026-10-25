@@ -116,6 +116,8 @@ class ResponsePlan(Base):
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     gaps: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    planner_provider: Mapped[str] = mapped_column(String(30), nullable=False, default="DETERMINISTIC")
+    planner_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     human_approval_required: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     generated_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
@@ -124,6 +126,8 @@ class ResponsePlan(Base):
     decision_reason: Mapped[str | None] = mapped_column(Text)
 
     incident: Mapped[Incident] = relationship(back_populates="plans")
+    assignments: Mapped[list["ResourceAssignment"]] = relationship(
+        back_populates="plan", order_by="ResourceAssignment.assigned_at")
 
 
 class WorkflowAudit(Base):

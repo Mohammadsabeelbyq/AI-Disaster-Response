@@ -11,7 +11,11 @@ from app.models.extraction import ExtractionReview, ReportExtraction
 from app.schemas.report import ExtractedFacts
 
 log = logging.getLogger(__name__)
-EXTRACTOR_VERSION = "rules-v2-resnet50"
+EXTRACTOR_VERSION = "rules-v3-confidence-resnet50"
+_DIRECT_EVIDENCE_CONFIDENCE = 1.0
+_TEXT_MATCH_CONFIDENCE = 0.9
+_LOCATION_HEURISTIC_CONFIDENCE = 0.75
+_NUMERIC_MATCH_CONFIDENCE = 0.95
 _MODEL_PATH = Path(__file__).resolve().parents[3] / "weights" / "disaster_model.keras"
 _MODEL_CONFIG_PATH = Path(__file__).resolve().parents[3] / "weights" / "config.json"
 _MODEL_WEIGHTS_PATH = Path(__file__).resolve().parents[3] / "weights" / "model.weights.h5"
@@ -67,7 +71,7 @@ def extract_text(description: str, disaster_type: str, location_name: str | None
     text = description.strip()
     category_evidence = _evidence_for(text, _CATEGORIES.get(disaster_type, ()))
     if not category_evidence and disaster_type != "OTHER":
-        category_evidence = [f"Submitted incident category: {disaster_type}"]
+        category_evidence = [disaster_type]
 
     severity_terms = ("trapped", "injured", "missing", "destroyed", "collapsed", "life-threatening")
     severity_evidence = _evidence_for(text, severity_terms)
@@ -83,11 +87,12 @@ def extract_text(description: str, disaster_type: str, location_name: str | None
     affected_evidence = [people_match.group(0)] if people_match else []
     assistance_evidence = {key: _evidence_for(text, terms) for key, terms in _ASSISTANCE.items()}
     hazard_evidence = {key: _evidence_for(text, terms) for key, terms in _HAZARDS.items()}
-    location_mentions = []
+    description_location_mentions = []
     for match in re.finditer(r"\b(?:near|at|in|on)\s+([A-Z][\w'-]*(?:\s+[A-Z][\w'-]*){0,3})", text):
         mention = match.group(1).strip(".,;:")
         if mention and mention.lower() not in {"the", "a", "an"}:
-            location_mentions.append(mention)
+            description_location_mentions.append(mention)
+    location_mentions = list(description_location_mentions)
     if location_name and location_name.strip():
         location_mentions.append(location_name.strip())
     location_mentions = list(dict.fromkeys(location_mentions))
@@ -102,21 +107,35 @@ def extract_text(description: str, disaster_type: str, location_name: str | None
         location_mentions=location_mentions,
     ).model_dump()
     evidence = {}
+    confidence = {}
     if category_evidence:
         evidence["incident_category"] = category_evidence
+        confidence["incident_category"] = _DIRECT_EVIDENCE_CONFIDENCE
     if severity_evidence:
         evidence["severity_cues"] = severity_evidence
+        confidence["severity_cues"] = _TEXT_MATCH_CONFIDENCE
     if urgency is not None:
         evidence["urgency"] = urgency_evidence
+        confidence["urgency"] = _TEXT_MATCH_CONFIDENCE
     if people_match:
         evidence["affected_persons"] = affected_evidence
+        confidence["affected_persons"] = _NUMERIC_MATCH_CONFIDENCE
     for field, values in (("hazards", hazard_evidence), ("requested_assistance", assistance_evidence)):
         matched = [phrase for phrases in values.values() for phrase in phrases]
         if matched:
             evidence[field] = list(dict.fromkeys(matched))
+            confidence[field] = _TEXT_MATCH_CONFIDENCE
     if location_mentions:
-        evidence["location_mentions"] = [location_name] if location_name else location_mentions
-    return facts, {}, evidence
+        evidence["location_mentions"] = list(dict.fromkeys([
+            *description_location_mentions,
+            *([location_name.strip()] if location_name and location_name.strip() else []),
+        ]))
+        confidence["location_mentions"] = (
+            _DIRECT_EVIDENCE_CONFIDENCE
+            if location_name and location_name.strip()
+            else _LOCATION_HEURISTIC_CONFIDENCE
+        )
+    return facts, confidence, evidence
 
 
 @lru_cache(maxsize=1)
@@ -180,17 +199,40 @@ def apply_image_classification(extraction: ReportExtraction, data: bytes, mime_t
         }
 
 
-def create_extraction(report, image=None) -> ReportExtraction:
-    facts, confidence, evidence = extract_text(
-        report.description, report.disaster_type, report.location_name)
+def create_extraction(
+    report,
+    image=None,
+    *,
+    analysis=None,
+    reviewed_by=None,
+) -> ReportExtraction:
+    if analysis is None:
+        facts, confidence, evidence = extract_text(
+            report.description, report.disaster_type, report.location_name)
+        extractor_version = EXTRACTOR_VERSION
+    else:
+        facts = analysis.facts.model_dump()
+        confidence = analysis.confidence
+        evidence = analysis.evidence
+        extractor_version = analysis.extractor_version
     extraction = ReportExtraction(
-        extractor_version=EXTRACTOR_VERSION,
+        extractor_version=extractor_version,
         extracted_facts=facts,
         confidence=confidence,
         evidence=evidence,
         image_analysis_status="NOT_PROVIDED",
         image_cues=None,
     )
+    if analysis is not None and analysis.reviewed_facts.model_dump() != facts:
+        reviewed_facts = analysis.reviewed_facts.model_dump()
+        extraction.corrected_facts = reviewed_facts
+        extraction.reviewed_by = reviewed_by
+        extraction.reviewed_at = datetime.now(timezone.utc)
+        extraction.reviews.append(ExtractionReview(
+            actor_id=reviewed_by,
+            previous_facts=facts,
+            corrected_facts=reviewed_facts,
+        ))
     if image:
         apply_image_classification(extraction, image.data, image.mime_type)
     return extraction

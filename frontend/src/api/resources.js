@@ -50,3 +50,11 @@ export function updateResourceAvailability(resourceId, availability, reason) {
     body: JSON.stringify({ availability, reason }),
   });
 }
+
+export function makeAllResourcesAvailable(reason) {
+  return request('/resources/availability/make-all-available', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}

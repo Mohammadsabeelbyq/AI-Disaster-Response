@@ -2,13 +2,22 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, LoaderCircle, Map as MapIcon, MapPin, RefreshCw, Search } from 'lucide-react';
 import L from 'leaflet';
 import { Link } from 'react-router-dom';
-import { CircleMarker, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
-import { listIncidents, listReports } from '../../api/reports.js';
+import { Circle, CircleMarker, GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
+import { getIncidentImpactArea, listIncidents, listNearbyResources, listReports } from '../../api/reports.js';
 import { parseLocationInput } from '../reports/mapLocation.js';
 import { getIncidentCoordinates, getMappableIncidents, getMarkerPresentation, mergeReportsWithIncidents, PRIORITY_LEVELS } from './incidentMap.js';
 
-const DEFAULT_CENTER = [10.027, 76.308];
 const REFRESH_INTERVAL_MS = 30000;
+const RESOURCE_STATES = ['AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE'];
+const RESOURCE_STATE_COLORS = {
+  AVAILABLE: '#2b7256',
+  BUSY: '#bd7b18',
+  DEPLOYED: '#3976a8',
+  ASSIGNED: '#775b8b',
+  UNAVAILABLE: '#a64135',
+  INACTIVE: '#78837d',
+  MAINTENANCE: '#a64135',
+};
 
 function MapViewport({ incident, searchPosition }) {
   const map = useMap();
@@ -47,6 +56,10 @@ function priorityStyle(priority) {
 
 export default function IncidentMapPage() {
   const [mapRecords, setMapRecords] = useState([]);
+  const [impactArea, setImpactArea] = useState(null);
+  const [nearbyResources, setNearbyResources] = useState([]);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourceError, setResourceError] = useState('');
   const [selectedId, setSelectedId] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -58,6 +71,8 @@ export default function IncidentMapPage() {
   const [updatedAt, setUpdatedAt] = useState(null);
   const latestRequestId = useRef(0);
   const locatedIncidents = getMappableIncidents(mapRecords);
+  const initialMapCenter = locatedIncidents.length
+    ? getIncidentCoordinates(locatedIncidents[0]) : [0, 0];
   const selectedIncident = locatedIncidents.find((incident) => incident.id === selectedId) || null;
   const selectedPresentation = selectedIncident ? getMarkerPresentation(selectedIncident) : null;
   const visibleStatuses = [...new Set(locatedIncidents.map((incident) => getMarkerPresentation(incident).statusClass))];
@@ -118,20 +133,49 @@ export default function IncidentMapPage() {
     };
   }, [refreshToken]);
 
+  useEffect(() => {
+    let active = true;
+    if (!selectedIncident || !['CONFIRMED', 'ACTIVE'].includes(selectedIncident.status)) {
+      setImpactArea(null);
+      setNearbyResources([]);
+      setResourcesLoading(false);
+      setResourceError('');
+      return () => { active = false; };
+    }
+
+    setResourcesLoading(true);
+    Promise.all([
+      getIncidentImpactArea(selectedIncident.id),
+      listNearbyResources(selectedIncident.id, RESOURCE_STATES),
+    ]).then(([area, resources]) => {
+      if (!active) return;
+      setImpactArea(area);
+      setNearbyResources(resources.resources || []);
+      setResourceError('');
+    }).catch((requestError) => {
+      if (active) setResourceError(requestError.message || 'Nearby resources could not be loaded.');
+    }).finally(() => active && setResourcesLoading(false));
+
+    return () => { active = false; };
+  }, [selectedIncident?.id, selectedIncident?.status, updatedAt]);
+
   return (
     <>
       <section className="page-heading incident-map-heading">
         <div>
           <div className="eyebrow"><span className="eyebrow__line" />COORDINATOR OPERATIONS</div>
           <h1>Incident map<span className="heading-period">.</span></h1>
-          <p>Saved reports and confirmed incidents at their recorded locations.</p>
+          <p>Submitted reports appear before review; their priority and nearby resources are available after confirmation.</p>
         </div>
-        <button className="button button--quiet incident-map-refresh" type="button"
-          onClick={() => setRefreshToken((current) => current + 1)} disabled={refreshing}
-          aria-label="Refresh incidents" title="Refresh incidents">
-          {refreshing ? <LoaderCircle className="location-spinner" size={16} /> : <RefreshCw size={16} />}
-          Refresh
-        </button>
+        <div className="incident-map-heading__actions">
+          <Link className="button button--primary" to="/review">Coordinator review & planning</Link>
+          <button className="button button--quiet incident-map-refresh" type="button"
+            onClick={() => setRefreshToken((current) => current + 1)} disabled={refreshing}
+            aria-label="Refresh incidents" title="Refresh incidents">
+            {refreshing ? <LoaderCircle className="location-spinner" size={16} /> : <RefreshCw size={16} />}
+            Refresh
+          </button>
+        </div>
       </section>
 
       {error && <div className="notice notice--error incident-map-error" role="alert">
@@ -185,7 +229,7 @@ export default function IncidentMapPage() {
           </div>
           <div className="incident-map-layout">
             <div className="incident-map-frame" aria-label="Map of confirmed incidents">
-              <MapContainer center={DEFAULT_CENTER} zoom={6} scrollWheelZoom className="incident-map-canvas">
+              <MapContainer center={initialMapCenter} zoom={locatedIncidents.length ? 6 : 2} scrollWheelZoom className="incident-map-canvas">
                 <TileLayer
                   attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -200,6 +244,33 @@ export default function IncidentMapPage() {
                     </Popup>
                   </CircleMarker>
                 )}
+                {selectedIncident && impactArea?.geometry_type === 'RADIUS' && impactArea.radius_m && (
+                  <Circle center={getIncidentCoordinates(selectedIncident)} radius={impactArea.radius_m}
+                    pathOptions={{ color: '#b87918', weight: 2, fillColor: '#e9ad43', fillOpacity: 0.12 }}>
+                    <Tooltip>Configured impact radius: {impactArea.radius_m} m</Tooltip>
+                  </Circle>
+                )}
+                {selectedIncident && impactArea?.geometry_type === 'POLYGON' && impactArea.polygon && (
+                  <GeoJSON data={impactArea.polygon}
+                    style={{ color: '#b87918', weight: 2, fillColor: '#e9ad43', fillOpacity: 0.12 }} />
+                )}
+                {nearbyResources.map((resource) => (
+                  <CircleMarker key={resource.id} center={[resource.latitude, resource.longitude]}
+                    radius={6}
+                    pathOptions={{
+                      color: '#ffffff',
+                      weight: 2,
+                      fillColor: RESOURCE_STATE_COLORS[resource.availability] || '#78837d',
+                      fillOpacity: 0.95,
+                    }}>
+                    <Tooltip>{resource.name} · {resource.availability}</Tooltip>
+                    <Popup>
+                      <strong>{resource.name}</strong><br />
+                      {resource.department_name} · {resource.resource_type || 'Unknown'}<br />
+                      {resource.availability} · {resource.distance_m} m
+                    </Popup>
+                  </CircleMarker>
+                ))}
                 {locatedIncidents.map((incident) => {
                   const position = getIncidentCoordinates(incident);
                   const selected = incident.id === selectedId;
@@ -235,10 +306,11 @@ export default function IncidentMapPage() {
                   ))}
                 </div>
                 <div className="incident-map-legend__note">Larger markers indicate higher priority.</div>
+                <div className="incident-map-legend__note">Submitted reports are pending review and are not priority-scored yet.</div>
               </section>
 
-              <section className="incident-map-list" aria-label="Located incidents">
-                <h2>Located incidents <span>{locatedIncidents.length}</span></h2>
+              <section className="incident-map-list" aria-label="Located reports and incidents">
+                <h2>Located reports &amp; incidents <span>{locatedIncidents.length}</span></h2>
                 <ul>
                   {locatedIncidents.map((incident) => (
                     <li key={incident.id}>
@@ -263,7 +335,7 @@ export default function IncidentMapPage() {
 
               {selectedIncident && (
                 <section className="incident-map-detail" aria-live="polite" aria-labelledby="incident-map-detail-title">
-                  <span className="section-kicker">SELECTED INCIDENT</span>
+                  <span className="section-kicker">SELECTED REPORT / INCIDENT</span>
                   <h2 id="incident-map-detail-title">{displayValue(selectedIncident.report.disaster_type)}</h2>
                   <dl>
                     <div><dt>ID</dt><dd>{selectedIncident.id}</dd></div>
@@ -289,6 +361,39 @@ export default function IncidentMapPage() {
                   </dl>
                   <p>{selectedIncident.report.description}</p>
                   {selectedIncident.priority_is_overridden && <small>Priority adjusted by a coordinator.</small>}
+                  <Link className="button button--quiet" to={`/review?reportId=${encodeURIComponent(selectedIncident.report_id || selectedIncident.id)}`}>
+                    Review this report
+                  </Link>
+                </section>
+              )}
+              {selectedIncident && (
+                <section className="incident-map-resources" aria-labelledby="incident-map-resources-title">
+                  <div className="incident-map-resources__heading">
+                    <h2 id="incident-map-resources-title">Nearby registered resources</h2>
+                    <span>{resourcesLoading ? 'Updating…' : nearbyResources.length}</span>
+                  </div>
+                  {resourceError ? (
+                    <p role="alert">{resourceError}</p>
+                  ) : nearbyResources.length ? (
+                    <ul>
+                      {nearbyResources.map((resource) => (
+                        <li key={resource.id}>
+                          <strong>{resource.name}</strong>
+                          <span>{resource.department_name} · {resource.distance_m} m</span>
+                          <span>{resource.capabilities.join(', ') || 'No capabilities recorded'}</span>
+                          <small style={{ color: RESOURCE_STATE_COLORS[resource.availability] }}>
+                            {displayValue(resource.availability)}
+                          </small>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>{resourcesLoading
+                      ? 'Loading nearby resource state.'
+                      : !['CONFIRMED', 'ACTIVE'].includes(selectedIncident.status)
+                        ? 'Confirm this report in coordinator review to calculate priority and load matching resources.'
+                        : 'No registered resources match the location and capabilities.'}</p>
+                  )}
                 </section>
               )}
             </aside>

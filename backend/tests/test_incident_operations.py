@@ -22,7 +22,6 @@ def _confirmed_incident(client, latitude=0, longitude=0):
     assert _login(
         client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT"
     ).status_code == 200
-    assert client.post(f"/reports/{report['id']}/review").status_code == 200
     incident = client.post(f"/reports/{report['id']}/confirm")
     assert incident.status_code == 201, incident.text
     return incident.json(), report
@@ -105,41 +104,65 @@ def test_nearby_resources_are_distance_ranked_and_filtered_by_capability_and_sta
     assert _login(
         client, "admin@example.test", "test-admin-password-123", "ADMIN"
     ).status_code == 200
+    department = client.post("/departments", json={
+        "code": "DEP-OPERATIONS",
+        "name": "Operations",
+        "department_type": "DISASTER_MANAGEMENT",
+    })
+    assert department.status_code == 201, department.text
+    department_id = department.json()["id"]
 
     near = client.post("/resources", json={
+        "code": "RES-LOCAL",
+        "department_id": department_id,
+        "resource_type": "RESCUE_TEAM",
         "name": "Local Rescue",
         "latitude": 0,
         "longitude": 0.01,
         "capabilities": ["RESCUE", "water rescue", "RESCUE"],
-        "status": "AVAILABLE",
+        "availability": "AVAILABLE",
     })
     farther = client.post("/resources", json={
+        "code": "RES-REGIONAL",
+        "department_id": department_id,
+        "resource_type": "RESCUE_TEAM",
         "name": "Regional Rescue",
         "latitude": 0,
         "longitude": 0.02,
         "capabilities": ["RESCUE"],
-        "status": "AVAILABLE",
+        "availability": "AVAILABLE",
     })
     wrong_capability = client.post("/resources", json={
+        "code": "RES-MEDICAL",
+        "department_id": department_id,
+        "resource_type": "VEHICLE",
         "name": "Medical Unit",
         "latitude": 0,
         "longitude": 0.005,
         "capabilities": ["MEDICAL"],
-        "status": "AVAILABLE",
+        "availability": "AVAILABLE",
     })
     busy = client.post("/resources", json={
+        "code": "RES-BUSY",
+        "department_id": department_id,
+        "resource_type": "RESCUE_TEAM",
         "name": "Busy Rescue",
         "latitude": 0,
         "longitude": 0.003,
         "capabilities": ["RESCUE"],
-        "status": "BUSY",
+        "availability": "BUSY",
     })
     missing_location = client.post("/resources", json={
+        "code": "RES-UNLOCATED",
+        "department_id": department_id,
+        "resource_type": "RESCUE_TEAM",
         "name": "Unlocated Rescue",
         "capabilities": ["RESCUE"],
     })
-    assert all(response.status_code == 201 for response in
-               [near, farther, wrong_capability, busy, missing_location])
+    assert all(response.status_code == 201 for response in [near, farther, wrong_capability, busy]), [
+        response.text for response in [near, farther, wrong_capability, busy]
+    ]
+    assert missing_location.status_code == 422
     assert near.json()["capabilities"] == ["RESCUE", "WATER_RESCUE"]
 
     _login(client, "user@example.test", "test-user-password-123", "USER")
@@ -155,7 +178,7 @@ def test_nearby_resources_are_distance_ranked_and_filtered_by_capability_and_sta
     ]
     assert body["resources"][0]["distance_m"] == round(
         2 * 6_371_008.8 * math.asin(math.sin(math.radians(0.01) / 2)))
-    assert body["resources"][0]["status"] == "AVAILABLE"
+    assert body["resources"][0]["availability"] == "AVAILABLE"
     assert body["resources"][0]["capabilities"] == ["RESCUE", "WATER_RESCUE"]
 
     include_busy = client.get(

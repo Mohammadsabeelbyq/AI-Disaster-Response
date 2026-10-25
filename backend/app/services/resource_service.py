@@ -2,15 +2,22 @@
 import math
 import re
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
 from app.models.incident import Incident
-from app.models.resource import RegisteredResource
-from app.schemas.resource import NearbyResourcesOut, ResourceCreate
-from app.services.errors import NotFound, ValidationFailed
+from app.models.resources import (
+    Department,
+    Resource,
+    ResourceAssignment,
+    ResourceAvailabilityEvent,
+)
+from app.schemas.resources import NearbyResourcesOut
+from app.services.errors import Conflict, NotFound, ValidationFailed
 
 EARTH_MEAN_RADIUS_METRES = 6_371_008.8
 CAPABILITY_ALIASES = {
@@ -52,35 +59,43 @@ def _distance_metres(latitude_a: float, longitude_a: float,
     return round(2 * EARTH_MEAN_RADIUS_METRES * math.asin(math.sqrt(min(1, haversine))))
 
 
-def register_resource(db: Session, actor_id: uuid.UUID, data: ResourceCreate) -> RegisteredResource:
-    resource = RegisteredResource(created_by=actor_id, **data.model_dump())
-    db.add(resource)
-    db.commit()
-    db.refresh(resource)
-    return resource
+def _point_in_ring(longitude: float, latitude: float, ring: list[list[float]]) -> bool:
+    inside = False
+    for first, second in zip(ring, ring[1:]):
+        x1, y1 = first
+        x2, y2 = second
+        if (y1 > latitude) != (y2 > latitude):
+            crossing_longitude = (x2 - x1) * (latitude - y1) / (y2 - y1) + x1
+            if longitude < crossing_longitude:
+                inside = not inside
+    return inside
 
 
-def update_registered_resource(db: Session, resource_id: uuid.UUID,
-                               data: ResourceCreate) -> RegisteredResource:
-    resource = db.get(RegisteredResource, resource_id)
-    if resource is None:
-        raise NotFound("Resource not found.")
-    for field, value in data.model_dump().items():
-        setattr(resource, field, value)
-    db.commit()
-    db.refresh(resource)
-    return resource
+def _inside_impact_area(incident: Incident, latitude: float, longitude: float) -> bool:
+    area = incident.impact_area
+    if area is None or area.geometry_type != "POLYGON" or not area.polygon:
+        return True
+    rings = area.polygon.get("coordinates", [])
+    return bool(rings and _point_in_ring(longitude, latitude, rings[0])
+                and not any(_point_in_ring(longitude, latitude, hole) for hole in rings[1:]))
 
 
-def find_nearby_resources(db: Session, incident_id: uuid.UUID, radius_m: int | None,
-                          capabilities: list[str] | None,
-                          statuses: list[str] | None) -> NearbyResourcesOut:
-    incident = db.scalar(select(Incident).where(Incident.id == incident_id))
-    if incident is None:
-        raise NotFound("Incident not found.")
-
+def find_resource_matches(
+    db: Session,
+    incident: Incident,
+    *,
+    radius_m: int | None = None,
+    capabilities: list[str] | None = None,
+    statuses: list[str] | None = None,
+) -> tuple[int, list[str], list[tuple[Resource, int, list[str]]]]:
     settings = get_settings()
-    search_radius = radius_m if radius_m is not None else settings.resource_search_radius_metres
+    area_radius = getattr(incident.impact_area, "radius_m", None)
+    search_radius = (
+        radius_m if radius_m is not None
+        else min(area_radius, settings.resource_search_radius_metres)
+        if area_radius is not None
+        else settings.resource_search_radius_metres
+    )
     if search_radius <= 0 or search_radius > settings.resource_max_search_radius_metres:
         raise ValidationFailed(
             f"radius_m must be between 1 and {settings.resource_max_search_radius_metres}.")
@@ -92,29 +107,69 @@ def find_nearby_resources(db: Session, incident_id: uuid.UUID, radius_m: int | N
         if _normalise_capability(capability)
     })
     selected_statuses = set(statuses or ["AVAILABLE"])
-    valid_statuses = {"AVAILABLE", "BUSY", "DEPLOYED", "UNAVAILABLE"}
+    valid_statuses = {
+        "AVAILABLE", "BUSY", "DEPLOYED", "UNAVAILABLE", "ASSIGNED", "INACTIVE", "MAINTENANCE",
+    }
     if not selected_statuses or not selected_statuses <= valid_statuses:
-        raise ValidationFailed("status must be one or more of AVAILABLE, BUSY, DEPLOYED, UNAVAILABLE.")
+        raise ValidationFailed("One or more resource availability states are invalid.")
 
-    report = incident.report
+    active_assignment = select(ResourceAssignment.id).where(
+        ResourceAssignment.resource_id == Resource.id,
+        ResourceAssignment.released_at.is_(None),
+    ).exists()
     candidates = db.scalars(
-        select(RegisteredResource).where(RegisteredResource.status.in_(selected_statuses))
-    ).all()
-    results = []
+        select(Resource).join(Resource.department)
+        .options(joinedload(Resource.department))
+        .where(
+            Department.is_active.is_(True),
+            Resource.availability.in_(selected_statuses),
+            ~active_assignment,
+        )
+        .order_by(Resource.code)
+    ).unique()
+    matches: list[tuple[Resource, int, list[str]]] = []
+    report_latitude = float(incident.report.map_latitude)
+    report_longitude = float(incident.report.map_longitude)
     for resource in candidates:
-        if resource.latitude is None or resource.longitude is None:
+        if (resource.resource_type is None or resource.latitude is None
+            or resource.longitude is None):
             continue
         distance = _distance_metres(
-            float(report.latitude), float(report.longitude),
+            report_latitude, report_longitude,
             float(resource.latitude), float(resource.longitude))
         if distance > search_radius:
             continue
-        matching_capabilities = set(resource.capabilities) & set(requested)
-        if not matching_capabilities:
+        if not _inside_impact_area(incident, float(resource.latitude), float(resource.longitude)):
             continue
-        results.append((resource, distance, len(matching_capabilities)))
+        resource_capabilities = {
+            _normalise_capability(value)
+            for value in resource.capabilities
+            if isinstance(value, str) and _normalise_capability(value)
+        }
+        matched = sorted(resource_capabilities.intersection(requested))
+        if requested and not matched:
+            continue
+        matches.append((resource, distance, matched))
 
-    results.sort(key=lambda match: (-match[2], match[1], match[0].name.casefold()))
+    matches.sort(key=lambda match: (-len(match[2]), match[1], match[0].code))
+    return search_radius, requested, matches
+
+
+def find_nearby_resources(db: Session, incident_id: uuid.UUID, radius_m: int | None,
+                          capabilities: list[str] | None,
+                          statuses: list[str] | None) -> NearbyResourcesOut:
+    incident = db.scalar(
+        select(Incident).options(
+            joinedload(Incident.report),
+            joinedload(Incident.impact_area),
+        ).where(Incident.id == incident_id)
+    )
+    if incident is None:
+        raise NotFound("Incident not found.")
+
+    search_radius, requested, matches = find_resource_matches(
+        db, incident, radius_m=radius_m, capabilities=capabilities, statuses=statuses)
+
     return NearbyResourcesOut(
         incident_id=incident.id,
         radius_m=search_radius,
@@ -122,28 +177,20 @@ def find_nearby_resources(db: Session, incident_id: uuid.UUID, radius_m: int | N
         resources=[
             {
                 "id": resource.id,
+                "code": resource.code,
                 "name": resource.name,
+                "resource_type": resource.resource_type,
+                "department_id": resource.department_id,
+                "department_name": resource.department.name,
                 "latitude": float(resource.latitude),
                 "longitude": float(resource.longitude),
                 "capabilities": resource.capabilities,
-                "status": resource.status,
+                "availability": resource.availability,
                 "distance_m": distance,
             }
-            for resource, distance, _ in results
+            for resource, distance, _ in matches
         ],
     )
-"""Persistent department/resource registry and audited availability workflows."""
-import uuid
-from datetime import datetime, timezone
-
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session, joinedload, selectinload
-
-from app.models.resources import Department, Resource, ResourceAvailabilityEvent
-from app.services.errors import Conflict, NotFound, ValidationFailed
-
-
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -184,6 +231,23 @@ def update_department(db: Session, department_id: uuid.UUID, *,
     if department_type is not None:
         department.department_type = department_type
     if is_active is not None:
+        if department.code == "LEGACY_UNASSIGNED" and is_active:
+            raise Conflict("Migrated resources must be assigned to real departments before use.")
+        if not is_active and db.scalar(
+            select(ResourceAssignment.id)
+            .join(Resource, ResourceAssignment.resource_id == Resource.id)
+            .where(
+                Resource.department_id == department.id,
+                ResourceAssignment.released_at.is_(None),
+            )
+            .limit(1)
+        ) is not None:
+            raise Conflict("Release active resource assignments before deactivating this department.")
+        if is_active and any(
+            resource.resource_type is None or resource.latitude is None or resource.longitude is None
+            for resource in department.resources
+        ):
+            raise Conflict("Complete resource type and location before activating this department.")
         if not is_active and any(
             resource.availability == "AVAILABLE" for resource in department.resources
         ):
@@ -264,10 +328,18 @@ def update_resource(db: Session, resource_id: uuid.UUID, *,
     resource = db.get(Resource, resource_id)
     if resource is None:
         raise NotFound("Resource not found.")
+    if db.scalar(
+        select(ResourceAssignment.id).where(
+            ResourceAssignment.resource_id == resource.id,
+            ResourceAssignment.released_at.is_(None),
+        )
+    ) is not None:
+        raise Conflict("Release the active response-plan assignment before editing this resource.")
     if department_id is not None:
         department = db.get(Department, department_id)
         if department is None or not department.is_active:
             raise ValidationFailed("Select an active registered department.")
+        resource.department = department
         resource.department_id = department_id
     if resource_type is not None:
         resource.resource_type = resource_type
@@ -279,18 +351,34 @@ def update_resource(db: Session, resource_id: uuid.UUID, *,
         resource.latitude = latitude
     if longitude is not None:
         resource.longitude = longitude
+    if (resource.latitude is None) != (resource.longitude is None):
+        raise ValidationFailed("Resource coordinates must either both be set or both be unknown.")
+    if resource.department.is_active and (
+        resource.resource_type is None or resource.latitude is None or resource.longitude is None
+    ):
+        raise ValidationFailed("An active-department resource requires a type and complete location.")
     resource.updated_at = _now()
     db.commit()
     return get_resource(db, resource_id)
-
-
 def update_availability(db: Session, resource_id: uuid.UUID, actor_id: uuid.UUID, *,
                         availability: str, reason: str) -> Resource:
     resource = db.get(Resource, resource_id)
     if resource is None:
         raise NotFound("Resource not found.")
+    if availability == "ASSIGNED":
+        raise ValidationFailed("Assign resources through an approved response plan.")
+    active_assignment = db.scalar(
+        select(ResourceAssignment.id).where(
+            ResourceAssignment.resource_id == resource.id,
+            ResourceAssignment.released_at.is_(None),
+        )
+    )
+    if active_assignment is not None:
+        raise Conflict("Release the active response-plan assignment before changing availability.")
     if not resource.department.is_active:
         raise Conflict("Resources owned by an inactive department cannot be made available.")
+    if resource.resource_type is None or resource.latitude is None or resource.longitude is None:
+        raise Conflict("Complete resource type and location before changing availability.")
     if resource.availability == availability:
         raise Conflict("Resource already has this availability state.")
 
@@ -306,40 +394,3 @@ def update_availability(db: Session, resource_id: uuid.UUID, actor_id: uuid.UUID
     ))
     db.commit()
     return get_resource(db, resource_id)
-
-
-def find_plan_candidates(db: Session, facts: dict) -> list[dict]:
-    requested = {
-        value.strip().upper()
-        for value in facts.get("requested_assistance", [])
-        if isinstance(value, str) and value.strip()
-    }
-    if not requested:
-        return []
-
-    resources = db.scalars(
-        select(Resource).join(Resource.department).options(joinedload(Resource.department))
-        .where(
-            Resource.availability == "AVAILABLE",
-            Department.is_active.is_(True),
-        )
-        .order_by(Resource.code)
-    ).unique()
-    candidates = []
-    for resource in resources:
-        matched = sorted(requested.intersection(
-            capability.strip().upper()
-            for capability in resource.capabilities
-            if isinstance(capability, str)
-        ))
-        if matched:
-            candidates.append({
-                "id": str(resource.id),
-                "code": resource.code,
-                "name": resource.name,
-                "resource_type": resource.resource_type,
-                "department_code": resource.department.code,
-                "department_name": resource.department.name,
-                "matched_capabilities": matched,
-            })
-    return candidates

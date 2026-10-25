@@ -5,6 +5,7 @@ import {
   createResource,
   listDepartments,
   listResources,
+  makeAllResourcesAvailable,
   updateDepartment,
   updateResource,
   updateResourceAvailability,
@@ -13,13 +14,14 @@ import { useAuth } from '../auth/AuthProvider.jsx';
 
 const departmentTypes = ['FIRE', 'MEDICAL', 'POLICE', 'DISASTER_MANAGEMENT'];
 const resourceTypes = ['RESCUE_TEAM', 'VEHICLE', 'SHELTER', 'SUPPLY'];
-const availabilityTypes = ['AVAILABLE', 'UNAVAILABLE', 'MAINTENANCE'];
+const availabilityTypes = ['AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE'];
+const registrationAvailabilityTypes = availabilityTypes.filter((value) => value !== 'ASSIGNED');
 
 const blankDepartment = { code: '', name: '', department_type: 'FIRE' };
 const blankResource = {
   code: '',
   department_id: '',
-  resource_type: 'RESCUE_TEAM',
+  resource_type: '',
   name: '',
   capabilities: '',
   latitude: '',
@@ -28,7 +30,7 @@ const blankResource = {
 };
 
 function statusLabel(value) {
-  return value.replaceAll('_', ' ');
+  return value ? value.replaceAll('_', ' ') : 'UNKNOWN';
 }
 
 export default function ResourceRegistryPage() {
@@ -42,6 +44,7 @@ export default function ResourceRegistryPage() {
   const [availabilityDrafts, setAvailabilityDrafts] = useState({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [bulkAvailabilityReason, setBulkAvailabilityReason] = useState('');
   const [message, setMessage] = useState(null);
 
   async function refreshRegistry() {
@@ -100,11 +103,11 @@ export default function ResourceRegistryPage() {
     setResourceDraft({
       code: resource.code,
       department_id: resource.department_id,
-      resource_type: resource.resource_type,
+      resource_type: resourceTypes.includes(resource.resource_type) ? resource.resource_type : '',
       name: resource.name,
       capabilities: resource.capabilities.join(', '),
-      latitude: String(resource.latitude),
-      longitude: String(resource.longitude),
+      latitude: resource.latitude == null ? '' : String(resource.latitude),
+      longitude: resource.longitude == null ? '' : String(resource.longitude),
       availability: resource.availability,
     });
     setMessage(null);
@@ -179,6 +182,36 @@ export default function ResourceRegistryPage() {
     }
   }
 
+  async function makeAllAvailable() {
+    const reason = bulkAvailabilityReason.trim();
+    if (!reason) {
+      setMessage({ kind: 'error', text: 'Add a reason for making all resources available.' });
+      return;
+    }
+    if (!window.confirm('This will set eligible resources to AVAILABLE and release all active response-plan assignments. Continue?')) {
+      return;
+    }
+
+    setSaving(true);
+    setMessage(null);
+    try {
+      const result = await makeAllResourcesAvailable(reason);
+      await refreshRegistry();
+      setBulkAvailabilityReason('');
+      const skippedSummary = result.skipped.length
+        ? ` Skipped: ${result.skipped.map((item) => `${item.code} (${item.reason})`).join('; ')}`
+        : '';
+      setMessage({
+        kind: result.skipped.length ? 'warning' : 'success',
+        text: `${result.resources_made_available} resources made available, including ${result.released_assignment_count} released assignments; ${result.already_available_count} already available.${skippedSummary}`,
+      });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
     <>
       <section className="page-heading">
@@ -213,7 +246,7 @@ export default function ResourceRegistryPage() {
                   {departments.map((department) => (
                     <li key={department.id}>
                       <span><strong>{department.code}</strong> · {department.name} <small>{statusLabel(department.department_type)} · {department.is_active ? 'ACTIVE' : 'INACTIVE'}</small></span>
-                      <button className="button button--quiet" type="button" disabled={saving} onClick={() => toggleDepartment(department)}>{department.is_active ? 'Deactivate' : 'Activate'}</button>
+                      {department.code !== 'LEGACY_UNASSIGNED' && <button className="button button--quiet" type="button" disabled={saving} onClick={() => toggleDepartment(department)}>{department.is_active ? 'Deactivate' : 'Activate'}</button>}
                     </li>
                   ))}
                 </ul>
@@ -223,7 +256,7 @@ export default function ResourceRegistryPage() {
                 <div className="panel-heading"><div><span className="section-kicker">RESOURCE MASTER DATA</span><h2>{editingResourceId ? 'Edit resource' : 'Register resource'}</h2></div></div>
                 <div className="field-grid">
                   <label className="field"><span>Unique resource code</span><input required maxLength="30" disabled={Boolean(editingResourceId)} value={resourceDraft.code} onChange={(event) => setResourceDraft({ ...resourceDraft, code: event.target.value })} placeholder="RES-BOAT-01" /></label>
-                  <label className="field"><span>Resource type</span><select value={resourceDraft.resource_type} onChange={(event) => setResourceDraft({ ...resourceDraft, resource_type: event.target.value })}>{resourceTypes.map((type) => <option key={type} value={type}>{statusLabel(type)}</option>)}</select></label>
+                  <label className="field"><span>Resource type</span><select required value={resourceDraft.resource_type} onChange={(event) => setResourceDraft({ ...resourceDraft, resource_type: event.target.value })}><option value="">Choose a resource type</option>{resourceTypes.map((type) => <option key={type} value={type}>{statusLabel(type)}</option>)}</select></label>
                 </div>
                 <label className="field"><span>Owning department</span><select required value={resourceDraft.department_id} onChange={(event) => setResourceDraft({ ...resourceDraft, department_id: event.target.value })}><option value="">Choose a department</option>{departments.filter((department) => department.is_active).map((department) => <option key={department.id} value={department.id}>{department.code} · {department.name}</option>)}</select></label>
                 <label className="field"><span>Resource name</span><input required maxLength="150" value={resourceDraft.name} onChange={(event) => setResourceDraft({ ...resourceDraft, name: event.target.value })} placeholder="North rescue boat" /></label>
@@ -232,7 +265,7 @@ export default function ResourceRegistryPage() {
                   <label className="field"><span>Latitude</span><input required type="number" min="-90" max="90" step="any" value={resourceDraft.latitude} onChange={(event) => setResourceDraft({ ...resourceDraft, latitude: event.target.value })} /></label>
                   <label className="field"><span>Longitude</span><input required type="number" min="-180" max="180" step="any" value={resourceDraft.longitude} onChange={(event) => setResourceDraft({ ...resourceDraft, longitude: event.target.value })} /></label>
                 </div>
-                {!editingResourceId && <label className="field"><span>Initial availability</span><select value={resourceDraft.availability} onChange={(event) => setResourceDraft({ ...resourceDraft, availability: event.target.value })}>{availabilityTypes.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}</select></label>}
+                {!editingResourceId && <label className="field"><span>Initial availability</span><select value={resourceDraft.availability} onChange={(event) => setResourceDraft({ ...resourceDraft, availability: event.target.value })}>{registrationAvailabilityTypes.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}</select></label>}
                 <div className="resource-form__actions">
                   <button className="button button--primary" type="submit" disabled={saving || !departments.some((department) => department.is_active)}><Save size={15} />{editingResourceId ? 'Save resource' : 'Register resource'}</button>
                   {editingResourceId && <button className="button button--quiet" type="button" onClick={() => { setEditingResourceId(null); setResourceDraft(blankResource); }}>Cancel edit</button>}
@@ -244,7 +277,27 @@ export default function ResourceRegistryPage() {
           <section className="panel resource-list-panel">
             <div className="panel-heading">
               <div><span className="section-kicker">DATABASE RECORDS</span><h2>Registered resources</h2></div>
-              <span className="results-total">{resources.length} total</span>
+              <div className="resource-list-panel__actions">
+                <span className="results-total">{resources.length} total</span>
+                <button
+                  className="button button--primary"
+                  type="button"
+                  disabled={saving || !bulkAvailabilityReason.trim() || resources.length === 0}
+                  onClick={makeAllAvailable}
+                >
+                  <Check size={15} />Make all resources available
+                </button>
+              </div>
+            </div>
+            <div className="field resource-bulk-availability">
+              <label htmlFor="bulk-availability-reason">Reason for bulk reset</label>
+              <input
+                id="bulk-availability-reason"
+                value={bulkAvailabilityReason}
+                onChange={(event) => setBulkAvailabilityReason(event.target.value)}
+                placeholder="Required; this will release active assignments"
+              />
+              <small>This action also releases active response-plan assignments.</small>
             </div>
             {resources.length === 0 ? (
               <div className="resource-state">No resources registered yet. An administrator can create departments and resources above.</div>
@@ -256,14 +309,15 @@ export default function ResourceRegistryPage() {
                     <article className="resource-row" key={resource.id}>
                       <div className="resource-row__identity">
                         <strong>{resource.name}</strong><span>{resource.code} · {statusLabel(resource.resource_type)} · {resource.department.name}</span>
-                        <span>{resource.latitude}, {resource.longitude}</span>
+                        <span>{resource.latitude ?? 'Unknown'}, {resource.longitude ?? 'Unknown'}</span>
                         <div className="resource-capabilities">{resource.capabilities.map((capability) => <span key={capability}>{statusLabel(capability)}</span>)}</div>
                       </div>
                       <div className="resource-row__controls">
                         <span className={`resource-availability resource-availability--${resource.availability.toLowerCase()}`}>{statusLabel(resource.availability)}</span>
-                        <label className="field"><span>Availability</span><select value={draft.availability} onChange={(event) => setAvailabilityDrafts((current) => ({ ...current, [resource.id]: { ...draft, availability: event.target.value } }))}>{availabilityTypes.map((value) => <option key={value} value={value}>{statusLabel(value)}</option>)}</select></label>
+                        <label className="field"><span>Availability</span><select value={draft.availability} onChange={(event) => setAvailabilityDrafts((current) => ({ ...current, [resource.id]: { ...draft, availability: event.target.value } }))}>{availabilityTypes.map((value) => <option key={value} value={value} disabled={value === 'ASSIGNED'}>{statusLabel(value)}</option>)}</select></label>
                         <label className="field"><span>Reason for change</span><input value={draft.reason} onChange={(event) => setAvailabilityDrafts((current) => ({ ...current, [resource.id]: { ...draft, reason: event.target.value } }))} placeholder="Required when changing state" /></label>
                         <button className="button button--quiet" type="button" disabled={saving || draft.availability === resource.availability} onClick={() => saveAvailability(resource)}>Save status</button>
+                        {resource.availability === 'ASSIGNED' && <small className="resource-assignment-help">Release active assignments from the incident response plan.</small>}
                         {isAdmin && <button className="button button--quiet" type="button" disabled={saving} onClick={() => startEditing(resource)}>Edit resource</button>}
                         <div className="resource-history">
                           {resource.availability_events.map((event) => (
