@@ -167,6 +167,20 @@ class IncidentSummaryOut(BaseModel):
 
     id: uuid.UUID
     status: str
+    merged_into_id: uuid.UUID | None = None
+
+
+class IncidentReportLinkOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    incident_id: uuid.UUID
+    report_id: uuid.UUID
+    source_incident_id: uuid.UUID | None
+    relationship_type: str
+    linked_by: uuid.UUID
+    reason: str
+    created_at: datetime
 
 
 class ResponsePlanOut(BaseModel):
@@ -206,6 +220,7 @@ class IncidentOut(BaseModel):
     report_id: uuid.UUID
     report: IncidentReportSummaryOut
     status: str
+    merged_into_id: uuid.UUID | None = None
     confirmed_by: uuid.UUID
     confirmed_at: datetime
     plans: list[ResponsePlanOut]
@@ -223,6 +238,7 @@ class IncidentOut(BaseModel):
     priority_override_by: uuid.UUID | None = None
     priority_override_at: datetime | None = None
     priority_calculated_at: datetime | None = None
+    report_links: list[IncidentReportLinkOut] = Field(default_factory=list)
 
     @field_validator("confirmed_at", "priority_override_at", "priority_calculated_at", mode="before")
     @classmethod
@@ -234,6 +250,15 @@ class IncidentOut(BaseModel):
 
 class PlanDecision(BaseModel):
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class IncidentRelationshipDecision(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _trim_reason(cls, value):
+        return value.strip() if isinstance(value, str) else value
 
 
 class ReportDismissal(BaseModel):
@@ -254,6 +279,7 @@ class ReportOut(BaseModel):
     extraction: ExtractionOut | None = None
     incident: IncidentSummaryOut | None = None
     location_correction: ReportLocationCorrectionOut | None = None
+    incident_links: list[IncidentReportLinkOut] = Field(default_factory=list)
 
     @field_validator("submitted_at", mode="before")
     @classmethod

@@ -23,6 +23,15 @@ from app.services.errors import ImageRejected, NotFound, ValidationFailed
 router = APIRouter(prefix="/reports", tags=["reports"], dependencies=[Depends(get_current_user)])
 
 
+def _report_response(report, user: User) -> ReportOut:
+    result = ReportOut.model_validate(report)
+    if user.role == "USER":
+        result.incident_links = []
+        if result.incident is not None:
+            result.incident.merged_into_id = None
+    return result
+
+
 async def _read_upload(upload: UploadFile | None) -> media_service.ValidatedImage | None:
     """Return a validated image, or None when the optional image was not provided."""
     if upload is None or (not upload.filename and upload.size in (0, None)):
@@ -51,7 +60,9 @@ async def submit_report(
     except ValidationError as exc:
         raise ValidationFailed("Invalid report.", import_service.format_validation_errors(exc)) from exc
     validated_image = await _read_upload(image)  # invalid image => whole submission rejected
-    return report_service.create_report(db, data, validated_image, submitted_by=user_id)
+    report = report_service.create_report(db, data, validated_image, submitted_by=user_id)
+    user = db.get(User, user_id)
+    return _report_response(report, user)
 
 
 @router.post("/import/json", response_model=ImportSummary)
@@ -72,7 +83,8 @@ async def import_csv(request: Request, db: Session = Depends(get_db),
 def list_reports(limit: int = 50, offset: int = 0, db: Session = Depends(get_db),
                  user: User = Depends(get_current_user)):
     owner = user.id if user.role == "USER" else None
-    return report_service.list_reports(db, min(max(limit, 1), 200), max(offset, 0), owner)
+    reports = report_service.list_reports(db, min(max(limit, 1), 200), max(offset, 0), owner)
+    return [_report_response(report, user) for report in reports]
 
 
 @router.get("/{report_id}", response_model=ReportOut)
@@ -81,7 +93,7 @@ def get_report(report_id: uuid.UUID, db: Session = Depends(get_db),
     report = report_service.get_report(db, report_id)
     if user.role == "USER" and report.submitted_by != user.id:
         raise NotFound("Report not found.")
-    return report
+    return _report_response(report, user)
 
 
 @router.patch("/{report_id}/extraction", response_model=ReportOut)
@@ -128,7 +140,8 @@ async def attach_media(report_id: uuid.UUID, image: UploadFile, db: Session = De
     validated = await _read_upload(image)
     if validated is None:
         raise ImageRejected("No image file was provided.", 422)
-    return report_service.attach_image(db, report_id, validated)
+    report = report_service.attach_image(db, report_id, validated)
+    return _report_response(report, user)
 
 
 @router.get("/{report_id}/image")

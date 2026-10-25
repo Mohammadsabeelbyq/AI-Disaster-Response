@@ -48,7 +48,7 @@ def test_coordinator_confirms_report_generates_grounded_plan_and_approves(client
     assert plan["source_facts"] == corrected
     assert plan["human_approval_required"] is True
     assert plan["resource_candidates"] == []
-    assert any("no specific responders" in gap for gap in plan["gaps"])
+    assert any("No available registered resource" in gap for gap in plan["gaps"])
     assert any("life-safety" in action for action in plan["recommended_actions"])
     assert any("rescue" in action for action in plan["recommended_actions"])
 
@@ -100,6 +100,105 @@ def test_dismissed_report_cannot_be_confirmed_or_planned(client, valid_form):
             "REPORT_REVIEW_STARTED", "REPORT_DISMISSED",
         ]
         assert events[1].details["reason"] == "Duplicate report."
+
+
+def test_coordinator_links_report_without_changing_its_original_source(client, valid_form):
+    primary = client.post("/reports", data=valid_form).json()
+    related = client.post("/reports", data={
+        **valid_form,
+        "description": "A second caller reports water at the same location.",
+    }).json()
+    assert _login_coordinator(client).status_code == 200
+    assert client.post(f"/reports/{primary['id']}/review").status_code == 200
+    incident = client.post(f"/reports/{primary['id']}/confirm").json()
+
+    linked = client.post(
+        f"/incidents/{incident['id']}/reports/{related['id']}/link",
+        json={"reason": "Same location and same flooding event."},
+    )
+    assert linked.status_code == 200, linked.text
+    assert linked.json()["report_links"][0]["report_id"] == related["id"]
+    assert linked.json()["report_links"][0]["relationship_type"] == "LINKED_REPORT"
+
+    fetched = client.get(f"/reports/{related['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["description"] == "A second caller reports water at the same location."
+    assert fetched.json()["status"] == "LINKED"
+    assert fetched.json()["incident_links"][0]["incident_id"] == incident["id"]
+    assert client.get(f"/reports/{primary['id']}").json()["description"] == valid_form["description"]
+
+    with SessionLocal() as db:
+        event = db.query(WorkflowAudit).filter_by(
+            event_type="REPORT_LINKED_TO_INCIDENT",
+            report_id=uuid.UUID(related["id"]),
+        ).one()
+        assert event.incident_id == uuid.UUID(incident["id"])
+        assert event.details["reason"] == "Same location and same flooding event."
+
+    assert client.post(
+        f"/incidents/{incident['id']}/reports/{related['id']}/link",
+        json={"reason": "Duplicate attempt."},
+    ).status_code == 409
+
+
+def test_coordinator_merges_incidents_and_keeps_both_original_reports(client, valid_form):
+    primary = client.post("/reports", data=valid_form).json()
+    duplicate = client.post("/reports", data={
+        **valid_form,
+        "description": "Another original source report for the same flood.",
+    }).json()
+    assert _login_coordinator(client).status_code == 200
+    for report in (primary, duplicate):
+        assert client.post(f"/reports/{report['id']}/review").status_code == 200
+    canonical = client.post(f"/reports/{primary['id']}/confirm").json()
+    duplicate_incident = client.post(f"/reports/{duplicate['id']}/confirm").json()
+
+    merged = client.post(
+        f"/incidents/{duplicate_incident['id']}/merge-into/{canonical['id']}",
+        json={"reason": "Coordinator verified both reports describe one flood."},
+    )
+    assert merged.status_code == 200, merged.text
+    relation = merged.json()["report_links"][0]
+    assert relation["report_id"] == duplicate["id"]
+    assert relation["source_incident_id"] == duplicate_incident["id"]
+    assert relation["relationship_type"] == "MERGED_INCIDENT"
+
+    original_report = client.get(f"/reports/{duplicate['id']}")
+    assert original_report.status_code == 200
+    assert original_report.json()["description"] == "Another original source report for the same flood."
+    assert original_report.json()["incident"]["id"] == duplicate_incident["id"]
+    assert original_report.json()["incident"]["status"] == "MERGED"
+    assert original_report.json()["incident"]["merged_into_id"] == canonical["id"]
+    assert original_report.json()["incident_links"][0]["incident_id"] == canonical["id"]
+
+    assert duplicate_incident["id"] not in {
+        item["id"] for item in client.get("/incidents").json()
+    }
+    archived = client.get(f"/incidents/{duplicate_incident['id']}")
+    assert archived.status_code == 200
+    assert archived.json()["status"] == "MERGED"
+    assert archived.json()["merged_into_id"] == canonical["id"]
+
+    assert client.post("/auth/logout").status_code == 204
+    assert client.post("/auth/login", json={
+        "email": "user@example.test",
+        "password": "test-user-password-123",
+        "role": "USER",
+    }).status_code == 200
+    reporter_view = client.get(f"/reports/{duplicate['id']}")
+    assert reporter_view.status_code == 200
+    assert reporter_view.json()["description"] == "Another original source report for the same flood."
+    assert reporter_view.json()["incident_links"] == []
+    assert reporter_view.json()["incident"]["merged_into_id"] is None
+
+    assert _login_coordinator(client).status_code == 200
+    with SessionLocal() as db:
+        event = db.query(WorkflowAudit).filter_by(
+            event_type="INCIDENT_MERGED",
+            incident_id=uuid.UUID(canonical["id"]),
+        ).one()
+        assert event.details["source_incident_id"] == duplicate_incident["id"]
+        assert event.details["reason"] == "Coordinator verified both reports describe one flood."
 
 
 def test_admin_can_manage_priority_configuration_and_rule_versioning(client, valid_form):

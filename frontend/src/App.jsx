@@ -7,6 +7,7 @@ import ReportFormPage from './features/reports/ReportFormPage.jsx';
 import ReviewPage from './features/reports/ReviewPage.jsx';
 import PriorityPolicyPage from './features/admin/PriorityPolicyPage.jsx';
 import IncidentMapPage from './features/incidents/IncidentMapPage.jsx';
+import ResourceRegistryPage from './features/resources/ResourceRegistryPage.jsx';
 
 export default function App() {
   const { user, loading, signOut } = useAuth();
@@ -29,6 +30,9 @@ export default function App() {
           )}
           {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
             <Route path="/incidents/map" element={<IncidentMapPage />} />
+          )}
+          {(user?.role === 'MANAGEMENT' || user?.role === 'ADMIN') && (
+            <Route path="/resources" element={<ResourceRegistryPage />} />
           )}
           {user?.role === 'ADMIN' && (
             <Route path="/admin/priority-policy" element={<PriorityPolicyPage />} />

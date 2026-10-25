@@ -32,6 +32,8 @@ class Incident(Base):
     report_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, ForeignKey("incident_reports.id", ondelete="CASCADE"), unique=True, nullable=False)
     status: Mapped[str] = mapped_column(String(30), default="CONFIRMED", nullable=False)
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("incidents.id", ondelete="SET NULL"), nullable=True, index=True)
     confirmed_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
     priority_score: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -49,8 +51,36 @@ class Incident(Base):
     priority_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     report: Mapped["IncidentReport"] = relationship(back_populates="incident")
+    merged_into: Mapped["Incident | None"] = relationship(
+        remote_side="Incident.id", foreign_keys=[merged_into_id])
+    report_links: Mapped[list["IncidentReportLink"]] = relationship(
+        foreign_keys="IncidentReportLink.incident_id",
+        back_populates="incident", cascade="all, delete-orphan",
+        order_by="IncidentReportLink.created_at")
     plans: Mapped[list["ResponsePlan"]] = relationship(
         back_populates="incident", cascade="all, delete-orphan", order_by="ResponsePlan.version")
+
+
+class IncidentReportLink(Base):
+    __tablename__ = "incident_report_links"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
+    incident_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("incidents.id", ondelete="CASCADE"), nullable=False, index=True)
+    report_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid, ForeignKey("incident_reports.id", ondelete="CASCADE"),
+        nullable=False, unique=True, index=True)
+    source_incident_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid, ForeignKey("incidents.id", ondelete="SET NULL"), nullable=True)
+    relationship_type: Mapped[str] = mapped_column(String(30), nullable=False)
+    linked_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now, nullable=False)
+
+    incident: Mapped[Incident] = relationship(
+        back_populates="report_links", foreign_keys=[incident_id])
+    report: Mapped["IncidentReport"] = relationship(back_populates="incident_links")
+    source_incident: Mapped[Incident | None] = relationship(foreign_keys=[source_incident_id])
 
 
 class IncidentPriorityOverride(Base):

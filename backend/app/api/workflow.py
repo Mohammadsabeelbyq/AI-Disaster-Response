@@ -9,6 +9,7 @@ from app.database import get_db
 from app.models.user import User
 from app.schemas.report import (
     IncidentOut,
+    IncidentRelationshipDecision,
     PriorityConfigInput,
     PriorityConfigOut,
     PriorityOverrideInput,
@@ -42,6 +43,26 @@ def confirm_report(
     user: User = management_user,
 ):
     return incident_service.confirm_report(db, report_id, user.id)
+
+
+@reports_router.post("/incidents/{incident_id}/reports/{report_id}/link",
+                     response_model=IncidentOut)
+def link_report_to_incident(incident_id: uuid.UUID, report_id: uuid.UUID,
+                            decision: IncidentRelationshipDecision,
+                            db: Session = Depends(get_db),
+                            user: User = management_user):
+    return incident_service.link_report_to_incident(
+        db, incident_id, report_id, user.id, decision.reason)
+
+
+@incidents_router.post("/{source_incident_id}/merge-into/{target_incident_id}",
+                       response_model=IncidentOut)
+def merge_incident(source_incident_id: uuid.UUID, target_incident_id: uuid.UUID,
+                   decision: IncidentRelationshipDecision,
+                   db: Session = Depends(get_db),
+                   user: User = management_user):
+    return incident_service.merge_incident(
+        db, source_incident_id, target_incident_id, user.id, decision.reason)
 
 
 @reports_router.post("/reports/{report_id}/dismiss", response_model=ReportOut)

@@ -563,3 +563,45 @@ button { color: inherit; }
   .incident-map-error { flex-wrap: wrap; }
   .incident-map-error a { margin-left: 25px; }
 }
+
+.resource-admin-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 14px; margin-bottom: 16px; align-items: start; }
+.resource-form, .resource-list-panel { padding: 21px; }
+.resource-form .panel-heading, .resource-list-panel .panel-heading { margin-bottom: 12px; }
+.resource-form .panel-heading h2, .resource-list-panel .panel-heading h2 { margin: 3px 0 0; font-size: 16px; }
+.resource-form__submit { margin-top: 16px; }
+.resource-form__actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 17px; }
+.resource-department-list { display: grid; gap: 8px; margin: 18px 0 0; padding: 14px 0 0; border-top: 1px solid var(--color-line); list-style: none; }
+.resource-department-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 0; color: var(--color-ink-soft); font-size: 11px; }
+.resource-department-list li > span { display: grid; }
+.resource-department-list small { color: var(--color-muted); font-size: 9px; }
+.resource-department-list .button { min-height: 32px; padding: 0 9px; font-size: 10px; }
+.resource-state { display: flex; min-height: 80px; align-items: center; justify-content: center; gap: 9px; padding: 20px; color: var(--color-muted); font-size: 12px; }
+.resource-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, .85fr); gap: 18px; padding: 18px 0; border-top: 1px solid var(--color-line); }
+.resource-row:first-child { border-top: 0; }
+.resource-row__identity { display: grid; align-content: start; gap: 4px; color: var(--color-muted); font-size: 11px; }
+.resource-row__identity > strong { color: var(--color-ink); font-size: 14px; }
+.resource-capabilities { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.resource-capabilities span { padding: 3px 7px; border-radius: 99px; background: var(--color-brand-wash); color: var(--color-brand); font-size: 9px; font-weight: 700; }
+.resource-row__controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; align-items: end; }
+.resource-row__controls .field { min-width: 0; margin-top: 0; }
+.resource-row__controls .field:first-of-type { grid-column: 1 / -1; }
+.resource-row__controls .field input, .resource-row__controls .field select { min-height: 35px; padding: 7px; font-size: 10px; }
+.resource-row__controls .button { min-height: 35px; padding: 0 9px; font-size: 10px; }
+.resource-history { grid-column: 1 / -1; display: grid; gap: 3px; }
+.resource-history small { color: var(--color-muted); font-size: 9px; }
+.resource-availability { justify-self: start; padding: 4px 8px; border-radius: 99px; background: var(--color-brand-wash); color: var(--color-success); font-size: 9px; font-weight: 700; letter-spacing: .04em; }
+.resource-availability--unavailable, .resource-availability--maintenance { background: var(--color-danger-wash); color: var(--color-danger); }
+.report-link-controls, .report-relationship-note { display: grid; gap: 7px; margin-top: 17px; padding: 13px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
+.report-link-controls > strong, .report-relationship-note > strong { color: var(--color-ink-soft); font-size: 11px; }
+.report-link-controls > p, .report-relationship-note > p, .report-relationship-note > span { margin: 0; color: var(--color-muted); font-size: 10px; }
+.report-link-controls__row { display: grid; grid-template-columns: minmax(150px, .9fr) minmax(180px, 1fr) auto; gap: 7px; }
+.report-link-controls__row input, .report-link-controls__row select { min-width: 0; min-height: 38px; padding: 7px 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: white; color: var(--color-ink); font-size: 10px; }
+.report-relationship-note > p { display: grid; gap: 2px; padding-top: 5px; border-top: 1px solid var(--color-line); }
+.plan-resource-candidates { display: grid; gap: 5px; margin-top: 14px; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
+.plan-resource-candidates > strong { color: var(--color-ink-soft); font-size: 11px; }
+.plan-resource-candidates > p { margin: 0; color: var(--color-muted); font-size: 10px; }
+@media (max-width: 760px) {
+  .resource-admin-grid { grid-template-columns: minmax(0, 1fr); }
+  .resource-row { grid-template-columns: minmax(0, 1fr); }
+  .report-link-controls__row { grid-template-columns: minmax(0, 1fr); }
+}
