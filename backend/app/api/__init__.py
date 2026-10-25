@@ -1,0 +1,1 @@
+from app.api import resources  # noqa: F401

@@ -78,6 +78,22 @@ export function listIncidents() {
   return request('/incidents');
 }
 
+export function linkReportToIncident(incidentId, reportId, reason) {
+  return request(`/incidents/${incidentId}/reports/${reportId}/link`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+export function mergeIncidentInto(sourceIncidentId, targetIncidentId, reason) {
+  return request(`/incidents/${sourceIncidentId}/merge-into/${targetIncidentId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
 export function getIncidentPriority(incidentId) {
   return request(`/incidents/${incidentId}/priority`);
 }

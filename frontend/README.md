@@ -1,6 +1,6 @@
 # Frontend workspace
 
-React + Vite client for incident intake and the first coordinator review/planning slice. It consumes FastAPI contracts and does not implement public/operational maps, resource registries, or actual dispatch.
+React + Vite client for incident intake, coordinator report/incident review, and the department/resource registry. It consumes persisted FastAPI contracts and does not execute assignments or dispatch.
 
 ## Run locally
 
@@ -23,7 +23,7 @@ Run the frontend location parser tests with:
 npm test
 ```
 
-Open the local URL Vite prints. Vite proxies `/auth`, `/reports`, and `/health` to `http://127.0.0.1:8000`. Set `VITE_API_BASE_URL` only when the API is hosted elsewhere.
+Open the local URL Vite prints. Vite proxies `/auth`, `/reports`, `/incidents`, `/response-plans`, `/priority-configs`, `/departments`, `/resources`, and `/health` to `http://127.0.0.1:8000`. Set `VITE_API_BASE_URL` only when the API is hosted elsewhere.
 
 To serve the production bundle from FastAPI, run `npm run build` and restart the backend. The client is served at `/`; `/report-form` remains as a compatibility URL. The legacy `incident_report.html` is retained as a fallback when no production bundle exists.
 
@@ -37,10 +37,13 @@ To serve the production bundle from FastAPI, run `npm run build` and restart the
 - Bulk import uses `POST /reports/import/json` or `/reports/import/csv` and displays each accepted/rejected row.
 - The coordinator Review workspace can move a report through review, confirm or dismiss it, inspect/correct extracted facts, generate a needs-based response-plan draft, and record an approve/reject decision.
 - Coordinators can detect potential report relationships using submission time and corrected map distance, optionally include semantic similarity, and confirm or reject proposals with recorded decisions; reports are never merged by this workflow.
-- The coordinator Incident map (`/incident-map`) displays saved, located confirmed incidents with status and priority indicators, selectable incident details, periodic refresh from the protected incident API, and coordinate-only lookup that places a temporary point without saving an incident.
-- Response plans use corrected/effective facts, require human approval, and explicitly show that no responder assignment or dispatch occurs because verified departments/resources are not yet registered.
+- Coordinators can link a submitted/under-review report to an active incident or merge a duplicate confirmed incident into a canonical incident with a required reason. Original report and incident records are retained and visible from the review workflow.
+- `/resources` is available to MANAGEMENT and ADMIN. ADMIN can create departments, register resources and edit resource details; MANAGEMENT and ADMIN can update resource availability with a required audit reason.
+- Resource plan candidates come from persisted, active-department resources whose availability is `AVAILABLE` and whose capability tags match extracted requested-assistance facts. No demo resource data is silently seeded.
+- The coordinator Incident map (`/incidents/map`) displays saved, located confirmed incidents with status and priority indicators, selectable incident details, and periodic refresh from the protected incident API.
+- Response plans use corrected/effective facts, show matching available registered-resource candidates, require human approval, and do not assign resources or dispatch services.
 - `/report-form` remains an alias for the web form.
-- Dashboard, report history, department/resource management, and actual incident operations/dispatch are not implemented in this frontend slice.
+- Dashboard, assignment execution, department alerts, and actual dispatch are not implemented in this frontend slice.
 
 ## Ownership and naming
 

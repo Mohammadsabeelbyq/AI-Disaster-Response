@@ -4,13 +4,21 @@ from datetime import datetime, timezone
 from typing import Callable
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.config import get_settings
-from app.models.incident import Incident, IncidentPriorityOverride, PriorityRuleConfig, ResponsePlan, WorkflowAudit
+from app.models.incident import (
+    Incident,
+    IncidentPriorityOverride,
+    IncidentReportLink,
+    PriorityRuleConfig,
+    ResponsePlan,
+    WorkflowAudit,
+)
 from app.models.resource import RegisteredResource
 from app.models.user import User
 from app.models.report import IncidentReport, ReportStatus
+from app.services import resource_service
 from app.services.errors import Conflict, NotFound, ValidationFailed
 from app.services.resource_service import (
     _distance_metres,
@@ -234,6 +242,94 @@ def confirm_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID) -> In
     return get_incident(db, incident.id)
 
 
+def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid.UUID,
+                            actor_id: uuid.UUID, reason: str) -> Incident:
+    incident = get_incident(db, incident_id)
+    report = _report_or_404(db, report_id)
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to link a report.")
+    if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
+        raise Conflict("Reports can only be linked to an active canonical incident.")
+    if report.status not in {ReportStatus.SUBMITTED, ReportStatus.UNDER_REVIEW}:
+        raise Conflict("Only unconfirmed reports can be linked to an incident.")
+    if report.incident is not None or report.incident_links:
+        raise Conflict("This report is already associated with an incident.")
+
+    report.status = "LINKED"
+    db.add(IncidentReportLink(
+        incident_id=incident.id,
+        report_id=report.id,
+        relationship_type="LINKED_REPORT",
+        linked_by=actor_id,
+        reason=reason_text,
+    ))
+    _audit(
+        db, actor_id, "REPORT_LINKED_TO_INCIDENT", report_id=report.id,
+        incident_id=incident.id,
+        details={"relationship_type": "LINKED_REPORT", "reason": reason_text},
+    )
+    db.commit()
+    db.expire_all()
+    return get_incident(db, incident.id)
+
+
+def merge_incident(db: Session, source_incident_id: uuid.UUID,
+                   target_incident_id: uuid.UUID, actor_id: uuid.UUID,
+                   reason: str) -> Incident:
+    reason_text = reason.strip()
+    if not reason_text:
+        raise ValidationFailed("A reason is required to merge incidents.")
+    if source_incident_id == target_incident_id:
+        raise Conflict("An incident cannot be merged into itself.")
+
+    source = get_incident(db, source_incident_id)
+    target = get_incident(db, target_incident_id)
+    if source.status != "CONFIRMED" or source.merged_into_id is not None:
+        raise Conflict("Only an unmerged confirmed incident can be merged.")
+    if target.status not in {"CONFIRMED", "ACTIVE"} or target.merged_into_id is not None:
+        raise Conflict("The target must be an active canonical incident.")
+    if source.report_id == target.report_id:
+        raise Conflict("Incidents based on the same report cannot be merged.")
+
+    # Preserve each source report and its original incident; only add a canonical relationship.
+    db.add(IncidentReportLink(
+        incident_id=target.id,
+        report_id=source.report_id,
+        source_incident_id=source.id,
+        relationship_type="MERGED_INCIDENT",
+        linked_by=actor_id,
+        reason=reason_text,
+    ))
+    source.status = "MERGED"
+    source.merged_into_id = target.id
+
+    # Existing report links follow the resulting canonical incident without rewriting reports.
+    source_links = db.scalars(
+        select(IncidentReportLink).where(
+            IncidentReportLink.incident_id == source.id,
+        )
+    ).all()
+    for link in source_links:
+        link.incident_id = target.id
+        if link.source_incident_id is None:
+            link.source_incident_id = source.id
+
+    _audit(
+        db, actor_id, "INCIDENT_MERGED", report_id=source.report_id,
+        incident_id=target.id,
+        details={
+            "source_incident_id": str(source.id),
+            "target_incident_id": str(target.id),
+            "source_report_id": str(source.report_id),
+            "reason": reason_text,
+        },
+    )
+    db.commit()
+    db.expire_all()
+    return get_incident(db, target.id)
+
+
 def dismiss_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID,
                    reason: str | None = None) -> IncidentReport:
     report = _report_or_404(db, report_id)
@@ -252,7 +348,8 @@ def list_incidents(db: Session) -> list[Incident]:
         select(Incident).options(
             joinedload(Incident.plans),
             joinedload(Incident.report).joinedload(IncidentReport.location_correction),
-        ).order_by(Incident.confirmed_at.desc())
+            selectinload(Incident.report_links),
+        ).where(Incident.merged_into_id.is_(None)).order_by(Incident.confirmed_at.desc())
     ).unique())
 
 
@@ -261,6 +358,7 @@ def get_incident(db: Session, incident_id: uuid.UUID) -> Incident:
         select(Incident).options(
             joinedload(Incident.plans),
             joinedload(Incident.report).joinedload(IncidentReport.location_correction),
+            selectinload(Incident.report_links),
         ).where(Incident.id == incident_id)
     )
     if incident is None:
@@ -507,7 +605,6 @@ def generate_response_plan(
 
     facts = dict(extraction.effective_facts)
     actions, requirements = _recommend_actions(facts)
-
     # 1. Grounding and Constraints Validation (FR-28)
     candidates, constraints_considered = evaluate_grounded_resources(db, incident)
 
@@ -540,6 +637,51 @@ def generate_response_plan(
         finalized_candidates, required_capabilities, search_radius
     )
 
+    registry_candidates = resource_service.find_plan_candidates(db, facts)
+    legacy_candidate_ids = {candidate["id"] for candidate in resource_candidates}
+    registry_candidates = [
+        candidate for candidate in registry_candidates
+        if candidate["id"] not in legacy_candidate_ids
+    ]
+    for candidate in registry_candidates:
+        matched_capabilities = candidate["matched_capabilities"]
+        resource_candidates.append({
+            **candidate,
+            "resource_id": candidate["id"],
+            "type": candidate["resource_type"],
+            "capability": ", ".join(matched_capabilities),
+            "capabilities": matched_capabilities,
+            "status": "AVAILABLE",
+            "matching_capabilities": matched_capabilities,
+        })
+        response_option["resources"].append({
+            "resource_id": candidate["id"],
+            "name": candidate["name"],
+            "type": candidate["resource_type"],
+            "capability": ", ".join(matched_capabilities),
+            "capabilities": matched_capabilities,
+            "status": "available",
+        })
+        evidence.append({
+            "resource_id": candidate["id"],
+            "facts": [
+                f"Resource '{candidate['name']}' exists in the registered department {candidate['department_name']} (ID: {candidate['id']}).",
+                "Operational availability verified (availability: 'AVAILABLE').",
+                f"Capabilities match incident requirements: {matched_capabilities}.",
+            ],
+        })
+
+    if registry_candidates:
+        registry_summary = "; ".join(
+            f"'{candidate['name']}' from {candidate['department_name']} matches "
+            f"{', '.join(candidate['matched_capabilities'])}"
+            for candidate in registry_candidates
+        )
+        if finalized_candidates:
+            rationale += f" Department-registered resources also matched: {registry_summary}."
+        else:
+            rationale = f"Recommended department-registered resources: {registry_summary}."
+
     if finalized_candidates:
         covered = set()
         for _, _, matching in finalized_candidates:
@@ -549,9 +691,11 @@ def generate_response_plan(
         if unmet:
             gaps.append(f"Unmet incident capability requirements: {', '.join(sorted(unmet))}.")
         gaps.extend(requirements)
+    elif registry_candidates:
+        gaps = list(requirements)
     else:
         gaps = [
-            "No suitable registered resources were found matching the required capabilities and location constraints; no specific responders are named or assigned.",
+            "No available registered resource was found; no suitable registered resources matched the required capabilities and location constraints, so no specific responders are named or assigned.",
             *requirements,
         ]
 

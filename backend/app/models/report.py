@@ -37,6 +37,9 @@ class IncidentReport(Base):
         back_populates="report", cascade="all, delete-orphan", uselist=False)
     incident: Mapped["Incident | None"] = relationship(
         back_populates="report", cascade="all, delete-orphan", uselist=False)
+    incident_links: Mapped[list["IncidentReportLink"]] = relationship(
+        back_populates="report", cascade="all, delete-orphan",
+        order_by="IncidentReportLink.created_at")
     location_correction: Mapped["ReportLocationCorrection | None"] = relationship(
         back_populates="report", cascade="all, delete-orphan", uselist=False)
 
@@ -101,6 +104,5 @@ class ReportLocationCorrection(Base):
     corrected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
     report: Mapped[IncidentReport] = relationship(back_populates="location_correction")
-
 
 

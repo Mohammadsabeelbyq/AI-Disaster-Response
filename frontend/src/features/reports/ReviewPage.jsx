@@ -10,9 +10,13 @@ import {
   dismissReport,
   generateResponsePlan,
   getIncident,
+  getReport,
+  linkReportToIncident,
+  listIncidents,
   overrideIncidentPriority,
   listReports,
   listReportRelationships,
+  mergeIncidentInto,
   rejectResponsePlan,
   startReportReview,
 } from '../../api/reports.js';
@@ -57,6 +61,7 @@ function locationDraftFrom(report) {
 export default function ReviewPage() {
   const [reports, setReports] = useState([]);
   const [relationships, setRelationships] = useState([]);
+  const [incidents, setIncidents] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [draft, setDraft] = useState(null);
   const [locationDraft, setLocationDraft] = useState(null);
@@ -72,6 +77,10 @@ export default function ReviewPage() {
   const [priorityBand, setPriorityBand] = useState('HIGH');
   const [relationshipBusy, setRelationshipBusy] = useState(false);
   const [relationshipReason, setRelationshipReason] = useState('');
+  const [linkTargetId, setLinkTargetId] = useState('');
+  const [linkReason, setLinkReason] = useState('');
+  const [mergeTargetId, setMergeTargetId] = useState('');
+  const [mergeReason, setMergeReason] = useState('');
   const selected = reports.find((report) => report.id === selectedId) || null;
   const factRows = (selected?.extraction ? [
     'incident_category', 'urgency', 'affected_persons', 'severity_cues', 'hazards', 'requested_assistance', 'location_mentions',
@@ -98,11 +107,13 @@ export default function ReviewPage() {
   });
 
   useEffect(() => {
-    listReports().then((items) => {
+    Promise.all([listReports(), listIncidents()]).then(([items, activeIncidents]) => {
       setReports(items);
+      setIncidents(activeIncidents);
+      setLinkTargetId(activeIncidents[0]?.id || '');
       if (items.length) {
         setSelectedId(items[0].id);
-        setDraft(draftFrom(items[0]));
+        if (items[0].extraction) setDraft(draftFrom(items[0]));
         setLocationDraft(locationDraftFrom(items[0]));
       }
     }).catch((error) => setMessage({ kind: 'error', text: error.message }))
@@ -128,7 +139,7 @@ export default function ReviewPage() {
 
   function selectReport(report) {
     setSelectedId(report.id);
-    setDraft(draftFrom(report));
+    setDraft(report.extraction ? draftFrom(report) : null);
     setLocationDraft(locationDraftFrom(report));
     setMessage(null);
   }
@@ -220,6 +231,57 @@ export default function ReviewPage() {
     }
   }
 
+  async function linkSelectedReport() {
+    const reason = linkReason.trim();
+    if (!linkTargetId || !reason) {
+      setMessage({ kind: 'error', text: 'Choose an incident and provide a reason for linking this report.' });
+      return;
+    }
+    setWorkflowBusy(true);
+    setMessage(null);
+    try {
+      await linkReportToIncident(linkTargetId, selected.id, reason);
+      const [updated, target, activeIncidents] = await Promise.all([
+        getReport(selected.id), getIncident(linkTargetId), listIncidents(),
+      ]);
+      updateReport(updated);
+      setIncident(target);
+      setIncidents(activeIncidents);
+      setLinkReason('');
+      setMessage({ kind: 'success', text: 'Original report preserved and linked to the selected incident.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }
+
+  async function mergeSelectedIncident() {
+    const reason = mergeReason.trim();
+    if (!incident || !mergeTargetId || !reason) {
+      setMessage({ kind: 'error', text: 'Choose a canonical incident and provide a reason for merging.' });
+      return;
+    }
+    setWorkflowBusy(true);
+    setMessage(null);
+    try {
+      await mergeIncidentInto(incident.id, mergeTargetId, reason);
+      const [updatedReport, mergedSource, activeIncidents] = await Promise.all([
+        getReport(selected.id), getIncident(incident.id), listIncidents(),
+      ]);
+      updateReport(updatedReport);
+      setIncident(mergedSource);
+      setPlan(null);
+      setIncidents(activeIncidents);
+      setMergeReason('');
+      setMessage({ kind: 'success', text: 'Incident merged into the canonical incident. Both source reports remain available.' });
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }
+
   async function runWorkflowAction(action) {
     setWorkflowBusy(true);
     setMessage(null);
@@ -231,6 +293,9 @@ export default function ReviewPage() {
         const confirmed = await confirmReport(selectedId);
         setIncident(confirmed);
         updateReport({ ...selected, status: 'ACCEPTED', incident: { id: confirmed.id, status: confirmed.status } });
+        const activeIncidents = await listIncidents();
+        setIncidents(activeIncidents);
+        if (!linkTargetId) setLinkTargetId(confirmed.id);
         setMessage({ kind: 'success', text: 'Incident confirmed. Generate a draft plan for coordinator review.' });
       } else if (action === 'dismiss') {
         const dismissed = await dismissReport(selectedId, decisionReason.trim() || null);
@@ -342,6 +407,69 @@ export default function ReviewPage() {
                   {selected.status === 'ACCEPTED' && incident && <span className="incident-confirmed">CONFIRMED · {incident.id}</span>}
                   {selected.status === 'DISMISSED' && <span className="incident-dismissed">DISMISSED · excluded from planning</span>}
                 </div>
+                {selected.incident_links?.length > 0 && (
+                  <div className="report-relationship-note">
+                    <strong>Linked to an incident</strong>
+                    {selected.incident_links.map((relationship) => (
+                      <p key={relationship.id}>
+                        {relationship.relationship_type.replaceAll('_', ' ')} · {relationship.incident_id}
+                        <span>{relationship.reason}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
+                {selected.incident?.status === 'MERGED' && (
+                  <div className="report-relationship-note" role="status">
+                    <strong>This source incident was merged into {selected.incident.merged_into_id}.</strong>
+                    <span>The original incident and report are retained for review.</span>
+                  </div>
+                )}
+                {!selected.incident && selected.incident_links?.length === 0
+                  && ['SUBMITTED', 'UNDER_REVIEW'].includes(selected.status) && (
+                    <div className="report-link-controls">
+                      <strong>Link this report to an existing incident</strong>
+                      <p>The source report stays unchanged and remains retrievable.</p>
+                      <div className="report-link-controls__row">
+                        <select aria-label="Canonical incident" value={linkTargetId} onChange={(event) => setLinkTargetId(event.target.value)}>
+                          <option value="">Choose incident</option>
+                          {incidents.map((item) => <option key={item.id} value={item.id}>{item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}</option>)}
+                        </select>
+                        <input aria-label="Report link reason" value={linkReason} onChange={(event) => setLinkReason(event.target.value)} placeholder="Reason for linking (required)" />
+                        <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={linkSelectedReport}>Link report</button>
+                      </div>
+                    </div>
+                  )}
+                {selected.incident && incident && incident.status !== 'MERGED' && (
+                  <div className="report-link-controls">
+                    <strong>Merge duplicate incident into canonical incident</strong>
+                    <p>This retains the source incident, its report, and the recorded merge history.</p>
+                    <div className="report-link-controls__row">
+                      <select aria-label="Merge target incident" value={mergeTargetId} onChange={(event) => setMergeTargetId(event.target.value)}>
+                        <option value="">Choose canonical incident</option>
+                        {incidents.filter((item) => item.id !== incident.id).map((item) => <option key={item.id} value={item.id}>{item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}</option>)}
+                      </select>
+                      <input aria-label="Incident merge reason" value={mergeReason} onChange={(event) => setMergeReason(event.target.value)} placeholder="Reason for merging (required)" />
+                      <button className="button button--quiet" type="button" disabled={workflowBusy} onClick={mergeSelectedIncident}>Merge into selected</button>
+                    </div>
+                  </div>
+                )}
+                {incident?.report_links?.length > 0 && (
+                  <div className="report-relationship-note">
+                    <strong>Related original reports</strong>
+                    {incident.report_links.map((relationship) => {
+                      const relatedReport = reports.find((report) => report.id === relationship.report_id);
+                      return (
+                        <p key={relationship.id}>
+                          <button className="header-link header-link--button" type="button" onClick={() => relatedReport && selectReport(relatedReport)}>
+                            {relationship.relationship_type.replaceAll('_', ' ')} · {relationship.report_id}
+                          </button>
+                          <span>{relatedReport?.description || 'Source report is available by its report ID.'}</span>
+                          <span>{relationship.reason}</span>
+                        </p>
+                      );
+                    })}
+                  </div>
+                )}
               </section>
 
               <section className="panel report-relationships">
@@ -404,7 +532,7 @@ export default function ReviewPage() {
                 )}
               </section>
 
-              {incident && (
+              {incident && incident.status !== 'MERGED' && (
                 <section className="panel response-plan-panel">
                   <div className="panel-heading">
                     <div><span className="section-kicker">DOWNSTREAM WORKFLOW</span><h2>Response planning</h2></div>
@@ -491,7 +619,7 @@ export default function ReviewPage() {
 
                   {!plan ? (
                     <>
-                      <p className="plan-explanation">Generate a deterministic draft from the corrected facts. It will not name or assign responders because no verified resource registry is configured.</p>
+                      <p className="plan-explanation">Generate a deterministic draft from corrected facts and currently available registered resources. The coordinator remains responsible for review; approval does not dispatch or assign responders.</p>
                       <button className="button button--primary" type="button" disabled={workflowBusy} onClick={() => runWorkflowAction('generate')}>Generate draft plan</button>
                     </>
                   ) : (
@@ -550,6 +678,12 @@ export default function ReviewPage() {
                       )}
 
                       <div className="plan-action-list"><strong>Recommended coordinator actions</strong>{plan.recommended_actions.map((action) => <p key={action}>{action}</p>)}</div>
+                      <div className="plan-resource-candidates">
+                        <strong>Verified available resource candidates</strong>
+                        {plan.resource_candidates.length ? plan.resource_candidates.map((resource) => (
+                          <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · matches {resource.matched_capabilities.join(', ')}</p>
+                        )) : <p>No available registered resource matches the reported assistance needs.</p>}
+                      </div>
                       <div className="plan-gap"><ShieldAlert size={16} /><span>{plan.gaps.join(' ')}</span></div>
                       <p className="plan-safety-note">Approval records a human decision only. This prototype does not dispatch services or execute assignments.</p>
                       {plan.status === 'AWAITING_APPROVAL' && (

@@ -1,4 +1,4 @@
-import { Activity, ClipboardCheck, FileJson2, FileText, LogOut, Map as MapIcon, SlidersHorizontal } from 'lucide-react';
+import { Activity, ClipboardCheck, FileJson2, FileText, LogOut, Map as MapIcon, SlidersHorizontal, Truck } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
 
 export default function AppShell({ children, user = null, onSignOut }) {
@@ -7,6 +7,7 @@ export default function AppShell({ children, user = null, onSignOut }) {
   const isReview = location.pathname === '/review';
   const isIncidentMap = location.pathname === '/incident-map';
   const isPriorityPolicy = location.pathname === '/admin/priority-policy';
+  const isResources = location.pathname === '/resources';
 
   return (
     <div className="intake-app">
@@ -32,6 +33,11 @@ export default function AppShell({ children, user = null, onSignOut }) {
               {(user.role === 'MANAGEMENT' || user.role === 'ADMIN') && (
                 <NavLink to="/incident-map" className={isIncidentMap ? 'mode-switch__link mode-switch__link--active' : 'mode-switch__link'}>
                   <MapIcon size={16} />Incident map
+                </NavLink>
+              )}
+              {(user.role === 'MANAGEMENT' || user.role === 'ADMIN') && (
+                <NavLink to="/resources" className={isResources ? 'mode-switch__link mode-switch__link--active' : 'mode-switch__link'}>
+                  <Truck size={16} />Resources
                 </NavLink>
               )}
               {user.role === 'ADMIN' && (

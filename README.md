@@ -5,9 +5,9 @@
 Users can submit incidents through a web form or bulk-import JSON / CSV, with optional photo evidence.
 Every accepted record becomes its own `incident_reports` row (status `SUBMITTED`) with a unique UUID and UTC submission timestamp. A separate `report_extractions` row stores evidence-linked, confidence-scored text facts. Original source fields are never overwritten by extraction or coordinator corrections.
 
-Epic 1 stories 1.1–1.5 and Epic 2 stories 2.1–2.5 are implemented. Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory and opt-in; without configuration the report is still accepted and its extraction reports `DISABLED`.
+The implemented slice includes Epics 1–4, original-report preservation and auditable report/incident linking and merging (Epic 5.3), plus department/resource registration and availability history (Epic 6.1–6.2). Text understanding uses deterministic, versioned rules and does not require a model API. Image analysis is advisory; failures do not prevent an otherwise valid report from being stored.
 
-The coordinator workflow supports report review, confirmation or dismissal, and generation of a deterministic response-plan draft from the extraction's `effective_facts`. Plans require a human approve/reject decision. There is currently no department/resource registry, so plans identify response needs and explicitly record that no responders are assigned; approval does not dispatch services.
+Coordinators can link an unconfirmed report to an active incident or merge a confirmed duplicate incident into a canonical incident. Reports, source descriptions, media, extractions and original incident rows are retained; the relationship and reason are recorded. Resources are persisted under registered departments, and response-plan drafts include only currently available resources with capabilities matching the report's requested assistance. Plans still require human approval; approval does not assign or dispatch resources.
 
 **Run it** (from `backend/`):
 ```bash
@@ -25,6 +25,28 @@ The React workspace lives in `frontend/`. For frontend development, start the ba
 Config lives in `backend/app/config.py` (override with env vars, see `backend/.env.example`).
 Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for the real thing.
 
+### Frontend demo: preserved reports and registered resources
+
+1. Configure `AUTH_SECRET_KEY` and local `DEMO_USER_*`, `DEMO_COORDINATOR_*`, and `DEMO_ADMIN_*` values in `backend/.env`. Start the API from `backend/` with `uvicorn app.main:app --reload`.
+2. In a second terminal, start the frontend from `frontend/` with `npm install` (first run only), then `npm run dev`. Sign in as `USER` and submit two reports for the same event, using descriptions that include a request such as “need rescue.”
+3. Sign in as `ADMIN`, open **Resources**, create a department, then register a resource with a unique code, type, capability `RESCUE`, coordinates, and `AVAILABLE` state.
+4. Sign in as `MANAGEMENT` (Coordinator), open **Review**, and confirm one report. For the other report, use **Link report** and enter a reason. Select the linked report to verify its original description is still visible and its incident relationship is shown.
+5. To demo a merge instead, review and confirm both reports separately, select the duplicate incident's original report, then use **Merge into selected** and provide a reason. The source incident is marked `MERGED`; its original report remains accessible, and the resulting incident shows the source report relationship.
+6. Generate a response-plan draft from an incident whose extracted facts request `RESCUE`. The plan shows matching, currently available registered resources. Open **Resources**, change that resource to `UNAVAILABLE` with a reason, and generate a new plan to verify it is excluded. The resource row shows the persisted availability change history.
+
+The demo does not seed fictional departments/resources, does not automatically merge suspected duplicates, and does not execute dispatch. Link/merge actions and availability changes persist in the configured database.
+
+### Task verification
+
+From the repository root:
+
+```powershell
+backend\.venv\Scripts\python.exe -m pytest
+cd frontend
+npm test
+npm run build
+```
+
 ### Where things are
 | Concern | File |
 |---|---|
@@ -38,6 +60,10 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | Tables `incident_reports`, `incident_media` | `backend/app/models/report.py` |
 | Extraction and review history | `backend/app/models/extraction.py` |
 | Confirmed incidents, response plans, workflow audit | `backend/app/models/incident.py` |
+| Report/incident links and merge history | `backend/app/models/incident.py`, `backend/app/services/incident_service.py` |
+| Departments, resources and availability history | `backend/app/models/resources.py`, `backend/app/services/resource_service.py` |
+| Department/resource APIs | `backend/app/api/resources.py` |
+| Resource registry UI | `frontend/src/features/resources/ResourceRegistryPage.jsx` |
 | Review transitions and deterministic draft planning | `backend/app/services/incident_service.py`, `backend/app/api/workflow.py` |
 | React frontend | `frontend/src/` (served at `/`; `/report-form` remains a compatibility route) |
 | FAISS / semantic search | `backend/app/faiss_search/` |
@@ -60,7 +86,12 @@ Default DB is SQLite for zero-setup dev; set `DATABASE_URL` to PostgreSQL for th
 | GET | `/report-relationships?status=PROPOSED` | List potential report links for coordinator review |
 | POST | `/report-relationships/{id}/confirm` | Confirm a relationship without merging reports |
 | POST | `/report-relationships/{id}/reject` | Reject a potential relationship and record the decision |
-| GET | `/incidents`, `/incidents/{id}` | List confirmed incidents and their plan history |
+| POST | `/incidents/{id}/reports/{report_id}/link` | Link an unconfirmed source report to an active incident (MANAGEMENT/ADMIN) |
+| POST | `/incidents/{source_id}/merge-into/{target_id}` | Merge a confirmed incident into a canonical incident while retaining its report (MANAGEMENT/ADMIN) |
+| GET | `/incidents`, `/incidents/{id}` | List canonical incidents and read incident or merge history |
+| GET / POST / PATCH | `/departments` | Read departments (MANAGEMENT/ADMIN); create/update department master data (ADMIN) |
+| GET / POST / PATCH | `/resources` | Read resources (MANAGEMENT/ADMIN); create/edit resource master data (ADMIN) |
+| PATCH | `/resources/{id}/availability` | Change current availability with a required reason (MANAGEMENT/ADMIN) |
 | POST | `/incidents/{id}/plans` | Generate a needs-based plan draft from corrected/effective facts |
 | GET | `/response-plans/{id}` | Read a response-plan draft and decision |
 | POST | `/response-plans/{id}/approve` | Record human approval; does not execute dispatch |
