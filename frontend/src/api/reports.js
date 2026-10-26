@@ -28,8 +28,9 @@ export function listReports() {
   return request('/reports?limit=200');
 }
 
-export function detectPotentialReportRelationships(reportId) {
-  return request(`/reports/${encodeURIComponent(reportId)}/potential-relationships`, {
+export function detectPotentialReportRelationships(reportId, semanticSearch = false) {
+  const query = new URLSearchParams({ semantic_search: String(semanticSearch) });
+  return request(`/reports/${encodeURIComponent(reportId)}/potential-relationships?${query}`, {
     method: 'POST',
   });
 }
@@ -116,11 +117,14 @@ export function listNearbyResources(incidentId, statuses = ['AVAILABLE']) {
   return request(`/incidents/${encodeURIComponent(incidentId)}/resources?${query}`);
 }
 
-export function linkReportToIncident(incidentId, reportId, reason) {
+export function linkReportToIncident(incidentId, reportId, reason, potentialRelationshipId = null) {
   return request(`/incidents/${incidentId}/reports/${reportId}/link`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ reason }),
+    body: JSON.stringify({
+      reason,
+      ...(potentialRelationshipId ? { potential_relationship_id: potentialRelationshipId } : {}),
+    }),
   });
 }
 

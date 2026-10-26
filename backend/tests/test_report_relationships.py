@@ -137,6 +137,86 @@ def test_semantic_similarity_is_included_when_enabled(client, monkeypatch):
     assert relationship["evidence"]["semantic_similarity"] == 0.8765
 
 
+def test_semantic_search_can_propose_reports_outside_time_and_distance_windows(
+    client, monkeypatch
+):
+    import app.services.report_relationship_service as service
+
+    source = client.post("/reports/import/json", json=[rec()]).json()
+    other = client.post("/reports/import/json", json=[rec(
+        description="A distant report with similar emergency context",
+        latitude=11,
+        longitude=77,
+    )]).json()
+    source_id = source["results"][0]["reportId"]
+    other_id = other["results"][0]["reportId"]
+    with SessionLocal() as db:
+        distant_report = db.get(IncidentReport, UUID(other_id))
+        distant_report.submitted_at = datetime.now(timezone.utc) - timedelta(days=3)
+        db.commit()
+
+    _sign_in_coordinator(client)
+    monkeypatch.setattr(service, "get_settings", lambda: SimpleNamespace(
+        report_relationship_time_window_hours=24,
+        report_relationship_radius_km=25,
+        semantic_report_matching_enabled=False,
+    ))
+    monkeypatch.setattr(service, "_semantic_scores", lambda _source, candidates: [
+        0.91 for _ in candidates
+    ])
+
+    detected = client.post(
+        f"/reports/{source_id}/potential-relationships?semantic_search=true"
+    )
+    assert detected.status_code == 200, detected.text
+    relationship = next(
+        item for item in detected.json()
+        if other_id in (item["report"]["id"], item["related_report"]["id"])
+    )
+    evidence = relationship["evidence"]
+    assert evidence["semantic_matching_enabled"] is True
+    assert evidence["semantic_candidate"] is True
+    assert evidence["semantic_similarity"] == 0.91
+    assert evidence["time_within_window"] is False
+    assert evidence["distance_within_radius"] is False
+
+
+def test_linking_a_proposed_relationship_records_decision_atomically(client):
+    source = client.post("/reports/import/json", json=[rec()]).json()
+    other = client.post("/reports/import/json", json=[rec(
+        description="A report about the nearby same emergency",
+        latitude=10.001,
+        longitude=76.301,
+    )]).json()
+    source_id = source["results"][0]["reportId"]
+    other_id = other["results"][0]["reportId"]
+    actor_id = _sign_in_coordinator(client)
+    incident = client.post(f"/reports/{source_id}/confirm")
+    assert incident.status_code == 201, incident.text
+
+    detected = client.post(f"/reports/{source_id}/potential-relationships")
+    assert detected.status_code == 200, detected.text
+    relationship = detected.json()[0]
+    reason = "Both reports describe the same response event."
+    linked = client.post(
+        f"/incidents/{incident.json()['id']}/reports/{other_id}/link",
+        json={
+            "reason": reason,
+            "potential_relationship_id": relationship["id"],
+        },
+    )
+    assert linked.status_code == 200, linked.text
+    assert client.get(f"/reports/{source_id}").status_code == 200
+    assert client.get(f"/reports/{other_id}").json()["status"] == "LINKED"
+    assert client.get("/report-relationships?status=PROPOSED").json() == []
+
+    confirmed = client.get("/report-relationships?status=CONFIRMED").json()[0]
+    assert confirmed["id"] == relationship["id"]
+    assert confirmed["decided_by"] == actor_id
+    assert confirmed["decision_reason"] == reason
+    assert confirmed["decided_at"]
+
+
 def test_rejected_relationship_is_recorded_and_not_reproposed(client):
     source = client.post("/reports/import/json", json=[rec()]).json()
     other = client.post("/reports/import/json", json=[rec(

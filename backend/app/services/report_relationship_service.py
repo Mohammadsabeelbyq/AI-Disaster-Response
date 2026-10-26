@@ -4,7 +4,7 @@ import math
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -15,6 +15,7 @@ from app.services.errors import Conflict, NotFound, ServiceUnavailable
 from app.services.incident_tracking import utc_now
 
 log = logging.getLogger(__name__)
+SEMANTIC_CANDIDATE_LIMIT = 5
 
 
 def _pair_ids(first: uuid.UUID, second: uuid.UUID) -> tuple[uuid.UUID, uuid.UUID]:
@@ -60,7 +61,10 @@ def _semantic_scores(source: IncidentReport, candidates: list[IncidentReport]) -
 
 
 def detect_potential_relationships(
-    db: Session, report_id: uuid.UUID, actor_id: uuid.UUID
+    db: Session,
+    report_id: uuid.UUID,
+    actor_id: uuid.UUID,
+    semantic_search: bool | None = None,
 ) -> list[ReportRelationshipRecord]:
     source = db.get(IncidentReport, report_id)
     if source is None:
@@ -75,43 +79,92 @@ def detect_potential_relationships(
             IncidentReport.status != "DISMISSED",
         )
     ).all()
-    candidates: list[tuple[IncidentReport, float, float]] = []
+    existing_relationships = db.scalars(
+        select(ReportRelationshipRecord).where(
+            or_(
+                ReportRelationshipRecord.report_id == source.id,
+                ReportRelationshipRecord.related_report_id == source.id,
+            )
+        )
+    ).all()
+    relationships_by_candidate = {
+        (
+            relationship.related_report_id
+            if relationship.report_id == source.id
+            else relationship.report_id
+        ): relationship
+        for relationship in existing_relationships
+    }
+    decided_candidate_ids = {
+        candidate_id
+        for candidate_id, relationship in relationships_by_candidate.items()
+        if relationship.status != "PROPOSED"
+    }
+    spatial_candidates: dict[uuid.UUID, tuple[IncidentReport, float, float]] = {}
     for candidate in reports:
         hours = _hours_between(source.submitted_at, candidate.submitted_at)
-        if hours > settings.report_relationship_time_window_hours:
-            continue
         distance = _distance_km(source, candidate)
-        if distance <= settings.report_relationship_radius_km:
-            candidates.append((candidate, hours, distance))
+        if (
+            hours <= settings.report_relationship_time_window_hours
+            and distance <= settings.report_relationship_radius_km
+        ):
+            spatial_candidates[candidate.id] = (candidate, hours, distance)
 
     semantic_scores: dict[uuid.UUID, float] = {}
-    if settings.semantic_report_matching_enabled and candidates:
-        scored_reports = [candidate for candidate, _, _ in candidates]
+    semantic_enabled = (
+        settings.semantic_report_matching_enabled
+        if semantic_search is None
+        else semantic_search
+    )
+    semantic_candidate_ids: set[uuid.UUID] = set()
+    if semantic_enabled and reports:
         semantic_scores = dict(zip(
-            (candidate.id for candidate in scored_reports),
-            _semantic_scores(source, scored_reports),
+            (candidate.id for candidate in reports),
+            _semantic_scores(source, reports),
         ))
+        semantic_candidate_ids = {
+            candidate_id
+            for candidate_id, _ in sorted(
+                (
+                    item for item in semantic_scores.items()
+                    if item[0] not in decided_candidate_ids
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )[:SEMANTIC_CANDIDATE_LIMIT]
+        }
+
+    candidates = dict(spatial_candidates)
+    if semantic_candidate_ids:
+        reports_by_id = {candidate.id: candidate for candidate in reports}
+        for candidate_id in semantic_candidate_ids:
+            candidate = reports_by_id[candidate_id]
+            candidates.setdefault(candidate_id, (
+                candidate,
+                _hours_between(source.submitted_at, candidate.submitted_at),
+                _distance_km(source, candidate),
+            ))
 
     proposals = []
-    for candidate, hours, distance in candidates:
-        first_id, second_id = _pair_ids(source.id, candidate.id)
-        relationship = db.scalar(select(ReportRelationshipRecord).where(
-            ReportRelationshipRecord.report_id == first_id,
-            ReportRelationshipRecord.related_report_id == second_id,
-        ))
+    for candidate, hours, distance in candidates.values():
+        relationship = relationships_by_candidate.get(candidate.id)
         if relationship is not None and relationship.status != "PROPOSED":
             continue
 
         evidence = {
             "time_difference_hours": round(hours, 3),
             "distance_km": round(distance, 3),
-            "semantic_matching_enabled": settings.semantic_report_matching_enabled,
+            "time_within_window": hours <= settings.report_relationship_time_window_hours,
+            "distance_within_radius": distance <= settings.report_relationship_radius_km,
+            "semantic_matching_enabled": semantic_enabled,
+            "semantic_candidate": candidate.id in semantic_candidate_ids,
             "semantic_similarity": (
                 round(semantic_scores[candidate.id], 4)
                 if candidate.id in semantic_scores else None
             ),
         }
         if relationship is None:
+            first_id, second_id = _pair_ids(source.id, candidate.id)
             relationship = ReportRelationshipRecord(
                 report_id=first_id,
                 related_report_id=second_id,

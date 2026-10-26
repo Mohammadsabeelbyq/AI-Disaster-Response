@@ -24,11 +24,12 @@ coordinator = Depends(require_roles("MANAGEMENT", "ADMIN"))
 )
 def detect_report_relationships(
     report_id: uuid.UUID,
+    semantic_search: bool | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = coordinator,
 ):
     proposals = report_relationship_service.detect_potential_relationships(
-        db, report_id, user.id
+        db, report_id, user.id, semantic_search
     )
     return [
         report_relationship_service.relationship_output(db, proposal)

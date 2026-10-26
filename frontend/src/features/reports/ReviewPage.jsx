@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, ShieldAlert, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, Search, ShieldAlert, Trash2 } from 'lucide-react';
 import {
   approveResponsePlan,
   assignResponsePlanResources,
   closeIncident,
   confirmReport,
   correctReportLocation,
+  decideReportRelationship,
+  detectPotentialReportRelationships,
   deleteReport,
   dismissReport,
   generateResponsePlan,
@@ -14,6 +16,7 @@ import {
   getReport,
   linkReportToIncident,
   listIncidents,
+  listReportRelationships,
   overrideIncidentPriority,
   listReports,
   rejectResponsePlan,
@@ -54,6 +57,12 @@ export default function ReviewPage() {
   const [assignmentResources, setAssignmentResources] = useState([]);
   const [assignmentResourcesLoading, setAssignmentResourcesLoading] = useState(false);
   const [priorityBand, setPriorityBand] = useState('HIGH');
+  const [potentialRelationships, setPotentialRelationships] = useState([]);
+  const [relationshipLinkSelections, setRelationshipLinkSelections] = useState({});
+  const [relationshipsLoading, setRelationshipsLoading] = useState(true);
+  const [relationshipBusyId, setRelationshipBusyId] = useState(null);
+  const [detectingRelationships, setDetectingRelationships] = useState(false);
+  const [semanticSearchEnabled, setSemanticSearchEnabled] = useState(false);
   const [linkTargetId, setLinkTargetId] = useState('');
   const [linkReason, setLinkReason] = useState('');
   const [unlinkReason, setUnlinkReason] = useState('');
@@ -81,6 +90,18 @@ export default function ReviewPage() {
       || ['CONFIRMED', 'ACTIVE'].includes(selected.incident?.status)
     );
   const canUnlinkSelectedReport = Boolean(selectedIncidentLink);
+  useEffect(() => {
+    let active = true;
+    listReportRelationships().then((items) => {
+      if (active) setPotentialRelationships(items);
+    }).catch((error) => {
+      if (active) setMessage({ kind: 'error', text: error.message });
+    }).finally(() => {
+      if (active) setRelationshipsLoading(false);
+    });
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => {
     Promise.all([listReports(), listIncidents()]).then(([items, activeIncidents]) => {
       setReports(items);
@@ -179,8 +200,127 @@ export default function ReviewPage() {
     setReports((current) => current.map((report) => report.id === updated.id ? updated : report));
   }
 
+  async function refreshPotentialRelationships() {
+    const items = await listReportRelationships();
+    setPotentialRelationships(items);
+    return items;
+  }
+
+  async function findPotentialMatches() {
+    if (!selected || selected.status === 'DISMISSED') return;
+    setDetectingRelationships(true);
+    setMessage(null);
+    try {
+      const detected = await detectPotentialReportRelationships(
+        selected.id,
+        semanticSearchEnabled,
+      );
+      setPotentialRelationships((current) => {
+        const byId = new Map(current.map((relationship) => [relationship.id, relationship]));
+        detected.forEach((relationship) => byId.set(relationship.id, relationship));
+        return [...byId.values()]
+          .filter((relationship) => relationship.status === 'PROPOSED')
+          .sort((first, second) => new Date(second.proposed_at) - new Date(first.proposed_at));
+      });
+      setMessage({
+        kind: 'success',
+        text: detected.length
+          ? `${detected.length} potential relationship${detected.length === 1 ? '' : 's'} found. Review each suggestion below.`
+          : 'No potential matches were found.',
+      });
+      try {
+        await refreshPotentialRelationships();
+      } catch (error) {
+        setMessage({
+          kind: 'error',
+          text: `Detection completed, but the proposal list could not be refreshed: ${error.message}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setDetectingRelationships(false);
+    }
+  }
+
+  async function linkPotentialRelationship(relationship, reportId, incidentId, reason) {
+    if (!reportId || !incidentId || !reason.trim()) {
+      setMessage({ kind: 'error', text: 'Choose a report, choose the other report’s active incident, and provide a reason.' });
+      return;
+    }
+    setRelationshipBusyId(relationship.id);
+    setMessage(null);
+    try {
+      await linkReportToIncident(
+        incidentId,
+        reportId,
+        reason.trim(),
+        relationship.id,
+      );
+      setPotentialRelationships((current) => current.filter((item) => item.id !== relationship.id));
+      setRelationshipLinkSelections((current) => {
+        const updated = { ...current };
+        delete updated[relationship.id];
+        return updated;
+      });
+      setMessage({
+        kind: 'success',
+        text: 'Report linked to the selected incident and the potential relationship recorded. Original report records remain available.',
+      });
+      try {
+        const [updatedReports, activeIncidents] = await Promise.all([
+          listReports(),
+          listIncidents(),
+          refreshPotentialRelationships(),
+        ]);
+        setReports(updatedReports);
+        setIncidents(activeIncidents);
+        if (selectedId) {
+          const updatedSelected = updatedReports.find((report) => report.id === selectedId);
+          if (updatedSelected) setLocationDraft(locationDraftFrom(updatedSelected));
+        }
+      } catch (error) {
+        setMessage({
+          kind: 'error',
+          text: `The link and relationship decision were recorded, but the review data could not be refreshed: ${error.message}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setRelationshipBusyId(null);
+    }
+  }
+
   function updateLocationCoordinate(field, value) {
     setLocationDraft((current) => ({ ...current, [field]: value, location_name: '' }));
+  }
+
+  async function rejectPotentialRelationship(relationshipId, reason) {
+    setRelationshipBusyId(relationshipId);
+    setMessage(null);
+    try {
+      await decideReportRelationship(relationshipId, 'reject', reason);
+      setPotentialRelationships((current) => current.filter((item) => item.id !== relationshipId));
+      setRelationshipLinkSelections((current) => {
+        const updated = { ...current };
+        delete updated[relationshipId];
+        return updated;
+      });
+      setMessage({ kind: 'success', text: 'Potential relationship rejected and recorded.' });
+      try {
+        await refreshPotentialRelationships();
+      } catch (error) {
+        setMessage({
+          kind: 'error',
+          text: `Rejection was recorded, but the proposal list could not be refreshed: ${error.message}`,
+        });
+      }
+    } catch (error) {
+      setMessage({ kind: 'error', text: error.message });
+    } finally {
+      setRelationshipBusyId(null);
+    }
   }
 
   async function saveLocationCorrection(event) {
@@ -500,10 +640,202 @@ export default function ReviewPage() {
   return (
     <>
       <section className="page-heading review-heading">
-        <div><div className="eyebrow"><span className="eyebrow__line" />COORDINATOR WORKSPACE</div><h1>Report review<span className="heading-period">.</span></h1><p>Confirm or dismiss reports, review linked context, and plan the response.</p></div>
-        <span className="review-count">{reports.length} REPORTS</span>
+        <div><div className="eyebrow"><span className="eyebrow__line" />COORDINATOR WORKSPACE</div><h1>Report review<span className="heading-period">.</span></h1><p>Review reports, potential links, and response plans. Linking preserves the original report records.</p></div>
+        <div className="review-heading__actions">
+          <span className="review-count">{reports.length} REPORTS</span>
+          <button
+            className={`button ${semanticSearchEnabled ? 'button--primary' : 'button--quiet'}`}
+            type="button"
+            aria-pressed={semanticSearchEnabled}
+            disabled={detectingRelationships}
+            onClick={() => setSemanticSearchEnabled((enabled) => !enabled)}
+          >
+            <Search size={15} />
+            Semantic search {semanticSearchEnabled ? 'on' : 'off'}
+          </button>
+          <button
+            className="button button--primary"
+            type="button"
+            disabled={!selected || selected.status === 'DISMISSED' || detectingRelationships}
+            onClick={findPotentialMatches}
+          >
+            {detectingRelationships
+              ? <LoaderCircle className="location-spinner" size={15} />
+              : <Search size={15} />}
+            {detectingRelationships ? 'Finding matches…' : 'Find potential matches'}
+          </button>
+        </div>
       </section>
       {message && <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.kind === 'error' ? <AlertCircle size={17} /> : <Check size={17} />}{message.text}</div>}
+      <section className="panel report-match-queue" aria-labelledby="potential-relationships-title">
+        <div className="report-match-queue__heading">
+          <div>
+            <span className="section-kicker">COORDINATOR REVIEW</span>
+            <h2 id="potential-relationships-title">Potential report relationships</h2>
+            <p>Suggestions use time and corrected map distance; semantic search optionally adds the top five text matches, including reports outside those windows.</p>
+          </div>
+          <span className="review-count">{potentialRelationships.length} TO REVIEW</span>
+        </div>
+        {relationshipsLoading ? (
+          <div className="review-loading"><LoaderCircle className="location-spinner" size={18} />Loading suggestions…</div>
+        ) : potentialRelationships.length === 0 ? (
+          <p className="report-match-queue__empty">No proposed relationships are waiting for review. Find potential matches from a selected report to run detection.</p>
+        ) : (
+          <div className="report-match-list">
+            {potentialRelationships.map((relationship) => {
+              const evidence = relationship.evidence || {};
+              const pairReports = [relationship.report, relationship.related_report];
+              const pairIds = pairReports.map((report) => report.id);
+              const reportDetails = pairReports.map((report) => (
+                reports.find((item) => item.id === report.id) || report
+              ));
+              const eligibleReports = reportDetails.filter((report) => (
+                !report.incident_links?.length
+                && (
+                  ['SUBMITTED', 'UNDER_REVIEW'].includes(report.status)
+                  || ['CONFIRMED', 'ACTIVE'].includes(report.incident?.status)
+                )
+              ));
+              const selection = relationshipLinkSelections[relationship.id] || {};
+              const suggestedSource = eligibleReports.find((report) => !report.incident?.id)
+                || eligibleReports[0];
+              const sourceReportId = eligibleReports.some((report) => report.id === selection.reportId)
+                ? selection.reportId
+                : suggestedSource?.id || '';
+              const availableTargets = incidents.filter((item) => (
+                pairIds.includes(item.report_id)
+                && item.report_id !== sourceReportId
+                && ['CONFIRMED', 'ACTIVE'].includes(item.status)
+                && item.merged_into_id == null
+              ));
+              const sourceReport = reportDetails.find((report) => report.id === sourceReportId);
+              const suggestedTarget = availableTargets.find((item) => (
+                item.report_id !== sourceReport?.id
+              ));
+              const targetIncidentId = availableTargets.some((item) => item.id === selection.incidentId)
+                ? selection.incidentId
+                : suggestedTarget?.id || '';
+              const semanticText = evidence.semantic_matching_enabled
+                ? (evidence.semantic_similarity == null
+                  ? 'Enabled · no score'
+                  : `Cosine similarity ${Number(evidence.semantic_similarity).toFixed(4)}`)
+                : 'Off';
+              return (
+                <article className="report-match-card" key={relationship.id}>
+                  <div className="report-match-card__reports">
+                    {pairReports.map((report) => (
+                      <div className="report-match-card__report" key={report.id}>
+                        <strong>{report.disaster_type.replaceAll('_', ' ')}</strong>
+                        <span>{report.description}</span>
+                        <small>{report.location_name || `${report.latitude}, ${report.longitude}`} · {new Date(report.submitted_at).toLocaleString()} · {report.status}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <dl className="report-match-evidence">
+                    <div><dt>Time apart</dt><dd>{Number(evidence.time_difference_hours).toFixed(2)} hours</dd></div>
+                    <div><dt>Distance</dt><dd>{Number(evidence.distance_km).toFixed(2)} km</dd></div>
+                    <div><dt>Semantic similarity</dt><dd>{semanticText}</dd></div>
+                    {evidence.semantic_candidate && (
+                      <div><dt>Match basis</dt><dd>
+                        {evidence.time_within_window && evidence.distance_within_radius
+                          ? 'Within time and distance windows'
+                          : 'Semantic result outside time/distance windows'}
+                      </dd></div>
+                    )}
+                  </dl>
+                  <div className="report-match-card__decision">
+                    <input
+                      aria-label={`Reason for linking potential relationship ${relationship.id}`}
+                      maxLength={1000}
+                      placeholder="Reason for linking (required)"
+                      value={selection.reason || ''}
+                      onChange={(event) => setRelationshipLinkSelections((current) => ({
+                        ...current,
+                        [relationship.id]: { ...selection, reason: event.target.value },
+                      }))}
+                    />
+                    <select
+                      aria-label={`Report to link for potential relationship ${relationship.id}`}
+                      value={sourceReportId}
+                      disabled={eligibleReports.length === 0}
+                      onChange={(event) => setRelationshipLinkSelections((current) => ({
+                        ...current,
+                        [relationship.id]: { ...selection, reportId: event.target.value, incidentId: '' },
+                      }))}
+                    >
+                      <option value="">Choose report to link</option>
+                      {eligibleReports.map((report) => (
+                        <option key={report.id} value={report.id}>
+                          {report.disaster_type.replaceAll('_', ' ')} · {report.id.slice(0, 8)}
+                        </option>
+                      ))}
+                    </select>
+                    <select
+                      aria-label={`Target incident for potential relationship ${relationship.id}`}
+                      value={targetIncidentId}
+                      disabled={availableTargets.length === 0}
+                      onChange={(event) => setRelationshipLinkSelections((current) => ({
+                        ...current,
+                        [relationship.id]: { ...selection, reportId: sourceReportId, incidentId: event.target.value },
+                      }))}
+                    >
+                      <option value="">Choose counterpart incident</option>
+                      {availableTargets.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.priority_band || 'UNRATED'} · {item.report.location_name || item.report.description.slice(0, 60)} · {item.id.slice(0, 8)}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      className="button button--primary"
+                      type="button"
+                      disabled={
+                        relationshipBusyId !== null
+                        || !sourceReportId
+                        || !targetIncidentId
+                        || !selection.reason?.trim()
+                      }
+                      onClick={() => linkPotentialRelationship(
+                        relationship,
+                        sourceReportId,
+                        targetIncidentId,
+                        selection.reason || '',
+                      )}
+                    >
+                      {relationshipBusyId === relationship.id
+                        ? <LoaderCircle className="location-spinner" size={15} />
+                        : <CircleCheck size={15} />}
+                      Link / merge into incident
+                    </button>
+                    <button
+                      className="button button--quiet"
+                      type="button"
+                      disabled={relationshipBusyId !== null}
+                      onClick={() => rejectPotentialRelationship(
+                        relationship.id,
+                        selection.reason || '',
+                      )}
+                    >
+                      <CircleX size={15} />
+                      Reject
+                    </button>
+                  </div>
+                  <p className="report-match-queue__empty">
+                    Linking a report that already has its own active incident merges that incident into the selected counterpart. Original reports and history are preserved.
+                  </p>
+                  {availableTargets.length === 0 && (
+                    <p className="report-match-queue__empty">
+                      {eligibleReports.length > 0
+                        ? 'Confirm one of these reports first to create an active incident, then this suggestion can link the other report into it.'
+                        : 'Neither report is currently available to link. Check report status and existing incident associations.'}
+                    </p>
+                  )}
+                </article>
+              );
+            })}
+          </div>
+        )}
+      </section>
       {loading ? <div className="review-loading"><LoaderCircle className="location-spinner" size={20} />Loading reports…</div> : reports.length === 0 ? <div className="panel review-empty">No reports are available for review.</div> : (
         <div className="review-layout">
           <aside className="panel review-list" aria-label="Reports">

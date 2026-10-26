@@ -51,7 +51,13 @@ def link_report_to_incident(incident_id: uuid.UUID, report_id: uuid.UUID,
                             db: Session = Depends(get_db),
                             user: User = management_user):
     return incident_service.link_report_to_incident(
-        db, incident_id, report_id, user.id, decision.reason)
+        db,
+        incident_id,
+        report_id,
+        user.id,
+        decision.reason,
+        decision.potential_relationship_id,
+    )
 
 
 @reports_router.post("/incidents/{incident_id}/reports/{report_id}/unlink",

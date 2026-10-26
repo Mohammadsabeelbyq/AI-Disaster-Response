@@ -243,7 +243,8 @@ def confirm_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID) -> In
 
 
 def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid.UUID,
-                            actor_id: uuid.UUID, reason: str) -> Incident:
+                            actor_id: uuid.UUID, reason: str,
+                            potential_relationship_id: uuid.UUID | None = None) -> Incident:
     incident = get_incident(db, incident_id)
     report = _report_or_404(db, report_id)
     reason_text = reason.strip()
@@ -255,6 +256,21 @@ def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid
         raise Conflict("A report cannot be linked to its own incident.")
     if report.incident_links:
         raise Conflict("This report is already associated with an incident.")
+
+    potential_relationship = None
+    if potential_relationship_id is not None:
+        potential_relationship = db.get(ReportRelationshipRecord, potential_relationship_id)
+        if potential_relationship is None:
+            raise NotFound("Potential report relationship not found.")
+        if potential_relationship.status != "PROPOSED":
+            raise Conflict("Only proposed report relationships can be linked.")
+        if {
+            potential_relationship.report_id,
+            potential_relationship.related_report_id,
+        } != {report.id, incident.report_id}:
+            raise Conflict(
+                "The selected report and target incident do not match the proposed relationship."
+            )
 
     source_incident = report.incident
     source_report_status = report.status
@@ -316,6 +332,25 @@ def link_report_to_incident(db: Session, incident_id: uuid.UUID, report_id: uuid
             "transferred_link_ids": transferred_link_ids,
         },
     )
+    if potential_relationship is not None:
+        now = datetime.now(timezone.utc)
+        potential_relationship.status = "CONFIRMED"
+        potential_relationship.decided_by = actor_id
+        potential_relationship.decided_at = now
+        potential_relationship.decision_reason = reason_text
+        _audit(
+            db,
+            actor_id,
+            "REPORT_RELATIONSHIP_CONFIRMED",
+            report_id=potential_relationship.report_id,
+            incident_id=incident.id,
+            details={
+                "relationship_id": str(potential_relationship.id),
+                "related_report_id": str(potential_relationship.related_report_id),
+                "decision_reason": reason_text,
+                "linked_report_id": str(report.id),
+            },
+        )
     db.commit()
     db.expire_all()
     return get_incident(db, incident.id)

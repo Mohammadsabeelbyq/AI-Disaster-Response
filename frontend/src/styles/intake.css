@@ -181,7 +181,27 @@ button { color: inherit; }
 .login-prototype-note { margin: 16px 2px 0; color: var(--color-muted); font-size: 9px; line-height: 1.6; text-align: center; }
 .auth-loading { display: grid; min-height: 240px; place-items: center; color: var(--color-muted); font-size: 12px; }
 .review-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; }
+.review-heading__actions { display: flex; align-items: center; gap: 9px; }
 .review-count, .review-status { padding: 5px 8px; border: 1px solid var(--color-line); border-radius: 3px; color: var(--color-muted); font-size: 8px; font-weight: 700; letter-spacing: .08em; white-space: nowrap; }
+.report-match-queue { display: grid; gap: 14px; margin-bottom: 16px; padding: 17px; }
+.report-match-queue__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.report-match-queue__heading h2 { margin: 4px 0 0; font-size: 15px; }
+.report-match-queue__heading p, .report-match-queue__empty { margin: 5px 0 0; color: var(--color-muted); font-size: 10px; line-height: 1.5; }
+.report-match-list { display: grid; gap: 10px; }
+.report-match-card { display: grid; gap: 11px; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
+.report-match-card__reports { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.report-match-card__report { display: grid; align-content: start; gap: 5px; min-width: 0; padding: 2px 12px; }
+.report-match-card__report + .report-match-card__report { border-left: 1px solid var(--color-line); }
+.report-match-card__report strong { color: var(--color-brand); font-size: 10px; }
+.report-match-card__report span { color: var(--color-ink); font-size: 10px; line-height: 1.45; }
+.report-match-card__report small { color: var(--color-muted); font-size: 9px; line-height: 1.4; }
+.report-match-evidence { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0; padding: 9px 12px 0; border-top: 1px solid var(--color-line); }
+.report-match-evidence div { display: flex; gap: 5px; font-size: 9px; }
+.report-match-evidence dt { color: var(--color-muted); }
+.report-match-evidence dd { margin: 0; color: var(--color-ink-soft); font-weight: 700; }
+.report-match-card__decision { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(150px, 1fr) minmax(150px, 1fr) auto auto; gap: 7px; }
+.report-match-card__decision input, .report-match-card__decision select { min-width: 0; min-height: 35px; padding: 7px 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink); font-size: 10px; }
+.report-match-card__decision .button { min-height: 35px; padding: 0 10px; font-size: 10px; }
 .review-layout { display: grid; grid-template-columns: minmax(220px, .72fr) minmax(0, 1.6fr); gap: 16px; align-items: start; }
 .review-list { overflow: hidden; }
 .review-list__header { display: flex; justify-content: space-between; padding: 14px 15px; border-bottom: 1px solid var(--color-line); }
@@ -583,6 +603,9 @@ button { color: inherit; }
   .import-aside h2 { margin-top: 6px; }
   .review-layout { grid-template-columns: minmax(0, 1fr); }
   .review-list { max-height: 260px; overflow-y: auto; }
+  .review-heading__actions { flex-wrap: wrap; justify-content: flex-end; }
+  .report-match-card__decision { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .report-match-card__decision input { grid-column: 1 / -1; }
   .priority-admin-layout { grid-template-columns: minmax(0, 1fr); }
   .incident-map-layout { grid-template-columns: minmax(0, 1fr); }
   .incident-map-canvas { height: 460px; }
@@ -614,7 +637,15 @@ button { color: inherit; }
   .login-panel { padding: 18px 14px; }
   .role-option small { min-height: 20px; }
   .review-heading { align-items: flex-start; }
+  .review-heading__actions { align-items: flex-end; flex-direction: column; }
   .review-count { margin-top: 4px; }
+  .report-match-queue { padding: 14px 11px; }
+  .report-match-queue__heading { flex-direction: column; }
+  .report-match-card__reports { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+  .report-match-card__report { padding: 2px 0; }
+  .report-match-card__report + .report-match-card__report { padding-top: 9px; border-top: 1px solid var(--color-line); border-left: 0; }
+  .report-match-card__decision { grid-template-columns: minmax(0, 1fr); }
+  .report-match-card__decision input { grid-column: auto; }
   .source-panel, .extraction-panel { padding: 15px 13px; }
   .report-analysis-shortcut { align-items: flex-start; padding: 15px 13px; }
   .report-analysis-shortcut .button { width: 100%; justify-content: center; }

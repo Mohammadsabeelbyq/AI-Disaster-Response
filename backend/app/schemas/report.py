@@ -311,6 +311,7 @@ class PlanDecision(BaseModel):
 
 class IncidentRelationshipDecision(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
+    potential_relationship_id: uuid.UUID | None = None
 
     @field_validator("reason", mode="before")
     @classmethod
