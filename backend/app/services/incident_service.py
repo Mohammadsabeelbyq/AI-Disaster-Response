@@ -1230,6 +1230,265 @@ def _resource_gaps(resource_candidates: list[dict], required_capabilities: list[
     return gaps
 
 
+def _greedy_capability_cover(
+    candidates: list[tuple[Resource, int, list[str]]],
+    required_capabilities: set[str],
+    excluded_ids: set[uuid.UUID],
+    seed_candidates: list[tuple[Resource, int, list[str]]] | None = None,
+) -> list[tuple[Resource, int, list[str]]] | None:
+    selected = [
+        candidate for candidate in seed_candidates or []
+        if candidate[0].id not in excluded_ids
+    ]
+    selected_ids = {candidate[0].id for candidate in selected}
+    uncovered = set(required_capabilities) - {
+        capability for _, _, matched in selected for capability in matched
+    }
+    remaining = [
+        candidate for candidate in candidates
+        if candidate[0].id not in excluded_ids | selected_ids
+    ]
+
+    while uncovered:
+        eligible = [
+            candidate for candidate in remaining
+            if uncovered.intersection(candidate[2])
+        ]
+        if not eligible:
+            return None
+        best = min(
+            eligible,
+            key=lambda candidate: (
+                -len(uncovered.intersection(candidate[2])),
+                candidate[1],
+                candidate[0].code,
+                str(candidate[0].id),
+            ),
+        )
+        selected.append(best)
+        uncovered.difference_update(best[2])
+        remaining.remove(best)
+
+    return selected
+
+
+def _alternative_metrics(
+    candidates: list[tuple[Resource, int, list[str]]],
+) -> tuple[int, frozenset[uuid.UUID], int]:
+    return (
+        len(candidates),
+        frozenset(candidate[0].department_id for candidate in candidates),
+        sum(candidate[1] for candidate in candidates),
+    )
+
+
+def _build_alternative_response(
+    primary_candidates: list[tuple[Resource, int, list[str]]],
+    eligible_candidates: list[tuple[Resource, int, list[str]]],
+    required_capabilities: list[str],
+    search_radius: float,
+) -> dict | None:
+    required = set(required_capabilities)
+    if not required:
+        return None
+
+    primary_ids = {candidate[0].id for candidate in primary_candidates}
+    primary_coverage = {
+        capability
+        for _, _, matched in primary_candidates
+        for capability in matched
+    }
+    unmet_primary = sorted(required - primary_coverage)
+    eligible_by_capability = {
+        capability: [
+            candidate for candidate in eligible_candidates
+            if capability in candidate[2]
+        ]
+        for capability in sorted(required)
+    }
+    unavailable_capabilities = [
+        capability for capability, candidates in eligible_by_capability.items()
+        if not candidates
+    ]
+    scarce_capabilities = [
+        capability for capability, candidates in eligible_by_capability.items()
+        if len(candidates) == 1
+    ]
+
+    options = []
+    if primary_candidates:
+        completed_primary = _greedy_capability_cover(
+            eligible_candidates, required, set(), primary_candidates
+        )
+        if (
+            completed_primary is not None
+            and {candidate[0].id for candidate in completed_primary} != primary_ids
+        ):
+            options.append(completed_primary)
+    else:
+        alternative = _greedy_capability_cover(eligible_candidates, required, set())
+        if alternative is not None:
+            options.append(alternative)
+    for candidate_id in primary_ids:
+        seed_candidates = [
+            candidate for candidate in primary_candidates
+            if candidate[0].id != candidate_id
+        ]
+        alternative = _greedy_capability_cover(
+            eligible_candidates, required, {candidate_id}, seed_candidates
+        )
+        if alternative is None:
+            continue
+        alternative_ids = {candidate[0].id for candidate in alternative}
+        if alternative_ids == primary_ids:
+            continue
+        options.append(alternative)
+
+    primary_metrics = _alternative_metrics(primary_candidates)
+    meaningful_options = [
+        option for option in options
+        if _alternative_metrics(option) != primary_metrics
+    ]
+    triggers = []
+    if unmet_primary:
+        triggers.append(
+            "The primary plan does not cover all required capabilities: "
+            + ", ".join(unmet_primary)
+            + "."
+        )
+    if scarce_capabilities:
+        triggers.append(
+            "Limited eligible availability for: "
+            + ", ".join(
+                f"{capability} ({len(eligible_by_capability[capability])} resource)"
+                for capability in scarce_capabilities
+            )
+            + "."
+        )
+    if meaningful_options:
+        triggers.append(
+            "A different feasible resource mix changes the number of units, "
+            "departments, or estimated travel distance."
+        )
+    if not triggers:
+        return None
+
+    alternative = min(
+        meaningful_options or options,
+        key=lambda option: (
+            _alternative_metrics(option)[0],
+            _alternative_metrics(option)[2],
+            len(_alternative_metrics(option)[1]),
+            tuple(sorted(candidate[0].code for candidate in option)),
+        ),
+        default=None,
+    )
+    if unavailable_capabilities:
+        no_alternative_reason = (
+            "No valid alternative can cover required capabilities with currently "
+            "available registered resources: "
+            + ", ".join(unavailable_capabilities)
+            + "."
+        )
+        alternative = None
+    elif alternative is None:
+        no_alternative_reason = (
+            "No distinct, feasible resource combination is available for the "
+            "required capabilities."
+        )
+    else:
+        no_alternative_reason = None
+
+    if alternative is None:
+        return {
+            "status": "UNAVAILABLE",
+            "trigger_reasons": triggers,
+            "resources": [],
+            "departments": [],
+            "evidence": [],
+            "rationale": no_alternative_reason,
+            "benefits": [],
+            "tradeoffs": [],
+            "no_alternative_reason": no_alternative_reason,
+        }
+
+    alternative_metrics = _alternative_metrics(alternative)
+    primary_departments = primary_metrics[1]
+    alternative_departments = alternative_metrics[1]
+    primary_distance = primary_metrics[2]
+    alternative_distance = alternative_metrics[2]
+    benefits = []
+    tradeoffs = []
+
+    if unmet_primary:
+        benefits.append("Covers all required capabilities using eligible resources.")
+    if alternative_metrics[0] < primary_metrics[0]:
+        reduction = primary_metrics[0] - alternative_metrics[0]
+        benefits.append(f"Uses {reduction} fewer resource unit(s).")
+        tradeoffs.append("Fewer units may mean less backup capacity.")
+    elif alternative_metrics[0] > primary_metrics[0]:
+        increase = alternative_metrics[0] - primary_metrics[0]
+        benefits.append("Adds units to cover the required capabilities.")
+        tradeoffs.append(f"Requires {increase} additional resource unit(s).")
+
+    if alternative_departments != primary_departments:
+        if len(alternative_departments) < len(primary_departments):
+            benefits.append("Coordinates with fewer departments.")
+        elif len(alternative_departments) > len(primary_departments):
+            tradeoffs.append("Requires coordination with more departments.")
+
+    distance_difference = alternative_distance - primary_distance
+    if distance_difference < 0:
+        benefits.append(
+            f"Reduces combined estimated travel by {abs(distance_difference)} m."
+        )
+    elif distance_difference > 0:
+        tradeoffs.append(
+            f"Adds {distance_difference} m to combined estimated travel."
+        )
+
+    resource_candidates, _, _, evidence = _build_grounded_response_data(
+        alternative, required_capabilities, search_radius
+    )
+    departments_by_id = {
+        candidate["department_id"]: {
+            "id": candidate["department_id"],
+            "code": candidate["department_code"],
+            "name": candidate["department_name"],
+        }
+        for candidate in resource_candidates
+    }
+    department_names = sorted(item["name"] for item in departments_by_id.values())
+    rationale = (
+        f"This option covers all {len(required)} required capability/capabilities "
+        f"using {len(resource_candidates)} currently available registered resource(s) "
+        f"({', '.join(candidate['code'] for candidate in resource_candidates)}) from "
+        f"{len(departments_by_id)} department(s): {', '.join(department_names)}. "
+        f"The primary plan uses "
+        f"{', '.join(candidate[0].code for candidate in primary_candidates) or 'no resources'} "
+        f"from {len(primary_departments)} department(s). "
+        f"Combined estimated travel is {alternative_distance} m, versus "
+        f"{primary_distance} m for the primary plan."
+    )
+    if not benefits and not tradeoffs:
+        benefits.append("Uses a different registered resource combination with equivalent capability coverage.")
+        tradeoffs.append(
+            "The measured unit count, department count, and travel distance are unchanged; "
+            "confirm the operational preference before choosing."
+        )
+    return {
+        "status": "AVAILABLE",
+        "trigger_reasons": triggers,
+        "resources": resource_candidates,
+        "departments": sorted(departments_by_id.values(), key=lambda item: item["code"]),
+        "evidence": evidence,
+        "rationale": rationale,
+        "benefits": benefits,
+        "tradeoffs": tradeoffs,
+        "no_alternative_reason": None,
+    }
+
+
 def _request_groq_plan(incident: Incident, facts: dict,
                        candidates: list[tuple[Resource, int, list[str]]],
                        constraints: list[str]) -> tuple[GroqPlanDraft | None, str | None]:
@@ -1375,6 +1634,7 @@ def generate_response_plan(
         candidate for candidate in fresh_candidates
         if candidate[0].id in fresh_resource_ids
     ]
+    eligible_candidates = list(finalized_candidates)
     if groq_draft is not None:
         selected_ids = set(groq_draft.resource_ids)
         fresh_by_id = {str(candidate[0].id): candidate for candidate in finalized_candidates}
@@ -1401,6 +1661,9 @@ def generate_response_plan(
     if rationale_override:
         rationale = rationale_override
     gaps = _resource_gaps(resource_candidates, required_capabilities, requirements)
+    alternative_response = _build_alternative_response(
+        finalized_candidates, eligible_candidates, required_capabilities, search_radius
+    )
 
     latest_version = db.scalar(
         select(func.max(ResponsePlan.version)).where(ResponsePlan.incident_id == incident.id)
@@ -1413,6 +1676,7 @@ def generate_response_plan(
         recommended_actions=actions,
         resource_candidates=resource_candidates,
         response_option=response_option,
+        alternative_response=alternative_response,
         constraints_considered=constraints_considered,
         rationale=rationale,
         evidence=evidence,

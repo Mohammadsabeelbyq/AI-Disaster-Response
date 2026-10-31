@@ -1139,6 +1139,59 @@ export default function ReviewPage() {
                           <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · {resource.distance_m} m · matches {resource.matched_capabilities.join(', ')}</p>
                         )) : <p>No available registered resource matches the reported assistance needs.</p>}
                       </div>
+                      {plan.alternative_response && (
+                        <section
+                          className={`plan-alternative plan-alternative--${plan.alternative_response.status.toLowerCase()}`}
+                          aria-label="Alternative response option"
+                        >
+                          <div className="plan-alternative__heading">
+                            <strong>Alternative response option</strong>
+                            <span>{plan.alternative_response.status === 'AVAILABLE' ? 'FEASIBLE' : 'NO VALID ALTERNATIVE'}</span>
+                          </div>
+                          <p>{plan.alternative_response.rationale}</p>
+                          {plan.alternative_response.trigger_reasons.length > 0 && (
+                            <div>
+                              <strong>Why it was considered</strong>
+                              <ul>{plan.alternative_response.trigger_reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+                            </div>
+                          )}
+                          {plan.alternative_response.status === 'AVAILABLE' ? (
+                            <>
+                              <div>
+                                <strong>Resources</strong>
+                                <ul>{plan.alternative_response.resources.map((resource) => (
+                                  <li key={resource.id}>
+                                    {resource.code} · {resource.name} · {resource.department_name} · {resource.status} · {resource.distance_m} m
+                                  </li>
+                                ))}</ul>
+                              </div>
+                              <div>
+                                <strong>Departments</strong>
+                                <ul>{plan.alternative_response.departments.map((department) => (
+                                  <li key={department.id}>{department.code} · {department.name}</li>
+                                ))}</ul>
+                              </div>
+                              {plan.alternative_response.benefits.length > 0 && (
+                                <div>
+                                  <strong>Benefits</strong>
+                                  <ul>{plan.alternative_response.benefits.map((benefit) => <li key={benefit}>{benefit}</li>)}</ul>
+                                </div>
+                              )}
+                              {plan.alternative_response.tradeoffs.length > 0 && (
+                                <div>
+                                  <strong>Trade-offs</strong>
+                                  <ul>{plan.alternative_response.tradeoffs.map((tradeoff) => <li key={tradeoff}>{tradeoff}</li>)}</ul>
+                                </div>
+                              )}
+                              <p className="plan-alternative__freshness">
+                                Availability reflects planning time; verify again before assignment. This option does not assign or dispatch resources.
+                              </p>
+                            </>
+                          ) : (
+                            <p>{plan.alternative_response.no_alternative_reason}</p>
+                          )}
+                        </section>
+                      )}
                       <p className="plan-safety-note">Approval does not assign resources. Coordinators reserve available registered units separately; AI suggestions are advisory.</p>
                       {plan.status === 'APPROVED' && (
                         <div className="plan-assignment-controls">

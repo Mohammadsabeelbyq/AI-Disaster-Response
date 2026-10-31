@@ -712,6 +712,15 @@ button { color: inherit; }
 .plan-resource-candidates { display: grid; gap: 5px; margin-top: 14px; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
 .plan-resource-candidates > strong { color: var(--color-ink-soft); font-size: 11px; }
 .plan-resource-candidates > p { margin: 0; color: var(--color-muted); font-size: 10px; }
+.plan-alternative { display: grid; gap: 8px; margin-top: 12px; padding: 13px; border: 1px solid var(--color-line); border-left: 3px solid var(--color-brand); border-radius: var(--radius-sm); background: var(--color-surface); color: var(--color-ink-soft); font-size: 10px; line-height: 1.55; }
+.plan-alternative--unavailable { border-left-color: var(--color-danger); }
+.plan-alternative__heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.plan-alternative__heading strong { color: var(--color-brand); font-size: 11px; }
+.plan-alternative__heading span { color: var(--color-muted); font-size: 8px; font-weight: 700; letter-spacing: .06em; }
+.plan-alternative p, .plan-alternative ul { margin: 0; }
+.plan-alternative ul { padding-left: 17px; }
+.plan-alternative > div > strong { color: var(--color-ink); font-size: 9px; text-transform: uppercase; }
+.plan-alternative__freshness { color: var(--color-muted); font-size: 9px; }
 .plan-assignment-controls, .plan-assignment-history { display: grid; gap: 8px; margin-top: 12px; padding: 12px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface-alt); }
 .plan-assignment-controls > strong, .plan-assignment-history > strong { color: var(--color-ink-soft); font-size: 11px; }
 .plan-assignment-controls > p { margin: 0; color: var(--color-muted); font-size: 10px; line-height: 1.5; }

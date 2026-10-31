@@ -244,6 +244,7 @@ class ResponsePlanOut(BaseModel):
     recommended_actions: list[str]
     resource_candidates: list[dict] = Field(default_factory=list)
     response_option: dict | None = None
+    alternative_response: dict | None = None
     constraints_considered: list[str] = Field(default_factory=list)
     rationale: str | None = None
     evidence: list[dict] = Field(default_factory=list)

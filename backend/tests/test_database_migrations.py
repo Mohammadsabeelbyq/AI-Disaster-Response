@@ -72,7 +72,7 @@ def test_upgrade_adds_planner_attribution_to_legacy_response_plans():
 
         _upgrade_response_plan_columns(test_engine)
         columns = {column["name"] for column in inspect(test_engine).get_columns("response_plans")}
-        assert {"planner_provider", "planner_model"} <= columns
+        assert {"planner_provider", "planner_model", "alternative_response"} <= columns
         with test_engine.connect() as connection:
             row = connection.execute(text(
                 "SELECT planner_provider, planner_model FROM response_plans"

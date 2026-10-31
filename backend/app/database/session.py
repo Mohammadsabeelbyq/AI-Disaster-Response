@@ -111,7 +111,7 @@ def _upgrade_response_plan_columns(bind) -> None:
     table_name = preparer.quote("response_plans")
     with bind.begin() as connection:
         for col_name in (
-            "response_option", "constraints_considered", "rationale", "evidence",
+            "response_option", "alternative_response", "constraints_considered", "rationale", "evidence",
             "planner_provider", "planner_model",
         ):
             if col_name not in existing:

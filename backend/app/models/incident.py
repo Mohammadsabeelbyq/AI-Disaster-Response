@@ -112,6 +112,7 @@ class ResponsePlan(Base):
     recommended_actions: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     resource_candidates: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)
     response_option: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    alternative_response: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     constraints_considered: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     rationale: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence: Mapped[list[dict]] = mapped_column(JSON, nullable=False, default=list)

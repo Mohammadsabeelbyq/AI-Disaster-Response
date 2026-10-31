@@ -114,6 +114,114 @@ def test_available_and_suitable_resources_are_recommended(client):
     assert "Location" in plan["constraints_considered"]
 
 
+def test_plan_includes_grounded_alternative_when_resource_mix_is_redundant(client):
+    incident = _create_confirmed_incident(
+        client, disaster_type="FLOOD", requested_assistance=["RESCUE"]
+    )
+    first = _register_resource(
+        client, "Rescue Unit Alpha", ["RESCUE", "WATER_RESCUE"]
+    )
+    _register_resource(
+        client, "Rescue Unit Bravo", ["RESCUE", "WATER_RESCUE"]
+    )
+    unavailable = _register_resource(
+        client, "Unavailable Rescue Unit", ["RESCUE", "WATER_RESCUE"],
+        status="UNAVAILABLE",
+    )
+
+    _login(client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT")
+    response = client.post(f"/incidents/{incident['id']}/plans")
+    assert response.status_code == 201, response.text
+    plan = response.json()
+
+    alternative = plan["alternative_response"]
+    assert alternative["status"] == "AVAILABLE"
+    assert len(plan["resource_candidates"]) == 2
+    assert len(alternative["resources"]) == 1
+    assert alternative["resources"][0]["id"] in {
+        first["id"],
+        next(
+            candidate["id"] for candidate in plan["resource_candidates"]
+            if candidate["id"] != first["id"]
+        ),
+    }
+    assert unavailable["id"] not in {
+        resource["id"] for resource in alternative["resources"]
+    }
+    assert alternative["departments"]
+    assert alternative["resources"][0]["department_id"] == alternative["departments"][0]["id"]
+    assert alternative["rationale"]
+    assert any("fewer" in benefit.lower() for benefit in alternative["benefits"])
+    assert alternative["tradeoffs"]
+
+
+def test_alternative_completes_primary_capability_gaps(client, monkeypatch):
+    incident = _create_confirmed_incident(
+        client, disaster_type="FLOOD", requested_assistance=["RESCUE"]
+    )
+    primary_resource = _register_resource(
+        client, "Rescue Unit", ["RESCUE"]
+    )
+    additional_resource = _register_resource(
+        client, "Water Rescue Unit", ["WATER_RESCUE"]
+    )
+
+    def primary_plan_with_gap(_incident, _facts, candidates, _constraints):
+        resource_ids = {str(resource.id) for resource, _, _ in candidates}
+        assert primary_resource["id"] in resource_ids
+        assert additional_resource["id"] in resource_ids
+        return (
+            GroqPlanDraft(
+                recommended_actions=["Coordinate rescue unit"],
+                resource_ids=[primary_resource["id"]],
+                rationale="Primary plan selects the rescue unit.",
+            ),
+            "test-model",
+        )
+
+    monkeypatch.setattr(incident_service, "_request_groq_plan", primary_plan_with_gap)
+    _login(client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT")
+    response = client.post(f"/incidents/{incident['id']}/plans")
+    assert response.status_code == 201, response.text
+    plan = response.json()
+
+    assert [item["id"] for item in plan["resource_candidates"]] == [
+        primary_resource["id"]
+    ]
+    alternative = plan["alternative_response"]
+    assert alternative["status"] == "AVAILABLE"
+    assert {item["id"] for item in alternative["resources"]} == {
+        primary_resource["id"],
+        additional_resource["id"],
+    }
+    assert any("does not cover all required capabilities" in trigger.lower()
+               for trigger in alternative["trigger_reasons"])
+    assert alternative["evidence"]
+
+
+def test_plan_explains_when_no_feasible_alternative_exists(client):
+    incident = _create_confirmed_incident(
+        client, disaster_type="FLOOD", requested_assistance=["RESCUE"]
+    )
+    only_resource = _register_resource(
+        client, "Only Available Rescue Unit", ["RESCUE", "WATER_RESCUE"]
+    )
+
+    _login(client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT")
+    response = client.post(f"/incidents/{incident['id']}/plans")
+    assert response.status_code == 201, response.text
+    alternative = response.json()["alternative_response"]
+
+    assert alternative["status"] == "UNAVAILABLE"
+    assert alternative["resources"] == []
+    assert alternative["departments"] == []
+    assert only_resource["name"] not in alternative["rationale"]
+    assert alternative["no_alternative_reason"]
+    assert "limited eligible availability" in " ".join(
+        alternative["trigger_reasons"]
+    ).lower()
+
+
 def test_unavailable_resources_are_excluded(client):
     """FR-28: Unavailable resources (status UNAVAILABLE) must not be recommended."""
     incident = _create_confirmed_incident(
