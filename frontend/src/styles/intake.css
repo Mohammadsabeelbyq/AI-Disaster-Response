@@ -524,9 +524,24 @@ button { color: inherit; }
 .incident-map-error { margin-bottom: 14px; }
 .incident-map-error a { margin-left: auto; color: var(--color-brand); font-weight: 700; text-decoration: underline; text-underline-offset: 3px; white-space: nowrap; }
 .incident-map-toolbar { display: flex; justify-content: space-between; gap: 12px; margin: 0 0 9px; color: var(--color-muted); font-size: 9px; font-weight: 700; letter-spacing: .06em; }
+.incident-queue { margin-bottom: 13px; padding: 15px; border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: var(--color-surface); }
+.incident-queue__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.incident-queue__heading h2 { margin: 0; font-size: 14px; }
+.incident-queue__heading p { margin: 3px 0 0; color: var(--color-muted); font-size: 10px; }
+.incident-queue__heading .button { min-height: 32px; font-size: 10px; }
+.incident-queue__filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin: 13px 0 8px; }
+.incident-queue__filters label { display: grid; gap: 5px; color: var(--color-ink-soft); font-size: 9px; font-weight: 700; }
+.incident-queue__filters select { width: 100%; min-width: 0; min-height: 36px; padding: 7px 9px; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: white; color: var(--color-ink); font-size: 10px; }
+.incident-queue__filters select:focus { border-color: var(--color-brand); outline: 0; box-shadow: 0 0 0 2px rgb(23 76 66 / 10%); }
+.incident-queue__items { max-height: 340px; overflow-y: auto; margin: 0; padding: 0; list-style: none; }
+.incident-queue__items > li { border-top: 1px solid var(--color-line); }
+.incident-queue__items .incident-map-item { gap: 10px; }
+.incident-queue__time { flex: 0 0 auto; color: var(--color-muted); font-size: 9px; white-space: nowrap; }
+.incident-queue__empty { margin: 12px 0 5px; color: var(--color-muted); font-size: 11px; }
 .incident-map-layout { display: grid; grid-template-columns: minmax(0, 1.65fr) minmax(260px, .75fr); gap: 13px; align-items: start; }
 .incident-map-frame { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--color-line-strong); border-radius: var(--radius-sm); background: #e8ece2; }
 .incident-map-canvas { width: 100%; height: 590px; font-family: inherit; }
+.incident-map-no-results { position: absolute; z-index: 500; top: 50%; left: 50%; width: max-content; max-width: calc(100% - 24px); padding: 9px 12px; transform: translate(-50%, -50%); border: 1px solid var(--color-line); border-radius: var(--radius-sm); background: rgb(255 254 250 / 94%); color: var(--color-ink-soft); font-size: 10px; text-align: center; }
 .incident-map-attribution { position: absolute; z-index: 500; right: 6px; bottom: 5px; padding: 2px 4px; background: rgb(255 254 250 / 88%); color: var(--color-ink-soft); font-size: 8px; pointer-events: none; }
 .incident-map-marker-shell { border: 0; background: transparent; }
 .incident-map-marker { display: block; width: 100%; height: 100%; border: 3px solid var(--color-muted); border-radius: 50%; background: var(--incident-priority-color, var(--color-subtle)); box-shadow: 0 1px 5px rgb(24 37 34 / 48%); }
@@ -608,6 +623,7 @@ button { color: inherit; }
   .report-match-card__decision input { grid-column: 1 / -1; }
   .priority-admin-layout { grid-template-columns: minmax(0, 1fr); }
   .incident-map-layout { grid-template-columns: minmax(0, 1fr); }
+  .incident-queue__filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .incident-map-canvas { height: 460px; }
   .incident-map-coordinate-form__controls .location-search__input { max-width: none; }
 }
@@ -665,6 +681,9 @@ button { color: inherit; }
   .incident-map-coordinate-form__controls > .button { align-self: flex-start; }
   .incident-map-error { flex-wrap: wrap; }
   .incident-map-error a { margin-left: 25px; }
+  .incident-queue__heading { align-items: flex-start; flex-direction: column; }
+  .incident-queue__items .incident-map-item { flex-wrap: wrap; }
+  .incident-queue__time { margin-left: 18px; }
 }
 
 .resource-admin-grid { display: grid; grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr); gap: 14px; margin-bottom: 16px; align-items: start; }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  filterAndSortIncidents,
   getIncidentCoordinates,
   getMappableIncidents,
   getMarkerPresentation,
@@ -59,6 +60,7 @@ test('shows saved reports immediately and replaces confirmed reports without dup
     latitude: 15,
     longitude: 20,
     location_name: null,
+    submitted_at: '2026-10-31T12:00:00Z',
   };
   const confirmed = {
     id: 'incident-1',
@@ -74,10 +76,49 @@ test('shows saved reports immediately and replaces confirmed reports without dup
   assert.equal(submittedRecords[0].status, 'SUBMITTED');
   assert.deepEqual(getIncidentCoordinates(submittedRecords[0]), [15, 20]);
   assert.equal(submittedRecords[0].priority_band, null);
+  assert.equal(submittedRecords[0].report.submitted_at, report.submitted_at);
 
   const confirmedRecords = mergeReportsWithIncidents([report], [confirmed]);
   assert.deepEqual(confirmedRecords, [confirmed]);
   assert.equal(mergeReportsWithIncidents([], [confirmed]).length, 1);
+});
+
+test('filters the incident queue by status, type, and time period', () => {
+  const now = Date.parse('2026-11-01T12:00:00Z');
+  const records = [
+    { id: 'recent-flood', status: 'ACTIVE', confirmed_at: '2026-11-01T08:00:00Z', report: { disaster_type: 'FLOOD' } },
+    { id: 'recent-fire', status: 'CLOSED', confirmed_at: '2026-10-31T12:00:00Z', report: { disaster_type: 'FIRE' } },
+    { id: 'old-flood', status: 'ACTIVE', confirmed_at: '2026-10-01T12:00:00Z', report: { disaster_type: 'FLOOD' } },
+    { id: 'unknown-time', status: 'ACTIVE', report: { disaster_type: 'FLOOD' } },
+  ];
+
+  assert.deepEqual(filterAndSortIncidents(records, {
+    status: 'ACTIVE', type: 'FLOOD', timeRange: '24H', now,
+  }).map(({ id }) => id), ['recent-flood']);
+  assert.deepEqual(filterAndSortIncidents(records, {
+    type: 'FIRE', timeRange: '7D', now,
+  }).map(({ id }) => id), ['recent-fire']);
+  assert.deepEqual(filterAndSortIncidents(records, {
+    timeRange: '30D', now,
+  }).map(({ id }) => id), ['recent-flood', 'recent-fire']);
+});
+
+test('sorts the incident queue by priority and time with unrated or unknown values last', () => {
+  const records = [
+    { id: 'medium', priority_band: 'MEDIUM', priority_score: 50, confirmed_at: '2026-11-01T10:00:00Z' },
+    { id: 'critical', priority_band: 'CRITICAL', priority_score: 91, confirmed_at: '2026-10-31T10:00:00Z' },
+    { id: 'low', priority_band: 'LOW', priority_score: 20, confirmed_at: '2026-11-01T11:00:00Z' },
+    { id: 'unrated', priority_band: null, confirmed_at: null },
+  ];
+
+  assert.deepEqual(filterAndSortIncidents(records, { sortBy: 'PRIORITY_HIGH' }).map(({ id }) => id),
+    ['critical', 'medium', 'low', 'unrated']);
+  assert.deepEqual(filterAndSortIncidents(records, { sortBy: 'PRIORITY_LOW' }).map(({ id }) => id),
+    ['low', 'medium', 'critical', 'unrated']);
+  assert.deepEqual(filterAndSortIncidents(records, { sortBy: 'OLDEST' }).map(({ id }) => id),
+    ['critical', 'medium', 'low', 'unrated']);
+  assert.deepEqual(filterAndSortIncidents(records, { sortBy: 'NEWEST' }).map(({ id }) => id),
+    ['low', 'medium', 'critical', 'unrated']);
 });
 
 test('maps every supported priority to a darker shade and clear label', () => {

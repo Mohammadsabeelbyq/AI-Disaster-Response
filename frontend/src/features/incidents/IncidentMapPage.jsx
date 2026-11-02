@@ -5,7 +5,7 @@ import { Link } from 'react-router-dom';
 import { Circle, CircleMarker, GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
 import { getIncidentImpactArea, listIncidents, listNearbyResources, listReports } from '../../api/reports.js';
 import { parseLocationInput } from '../reports/mapLocation.js';
-import { getIncidentCoordinates, getMappableIncidents, getMarkerPresentation, mergeReportsWithIncidents, PRIORITY_LEVELS } from './incidentMap.js';
+import { filterAndSortIncidents, getIncidentCoordinates, getMappableIncidents, getMarkerPresentation, mergeReportsWithIncidents, PRIORITY_LEVELS } from './incidentMap.js';
 
 const REFRESH_INTERVAL_MS = 30000;
 const RESOURCE_STATES = ['AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE'];
@@ -47,6 +47,15 @@ function displayValue(value) {
   return String(value || 'UNKNOWN').replaceAll('_', ' ');
 }
 
+function incidentTime(incident) {
+  return incident.confirmed_at || incident.report?.submitted_at || '';
+}
+
+function formatIncidentTime(value) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? 'Time unavailable' : date.toLocaleString();
+}
+
 function priorityStyle(priority) {
   return {
     '--incident-priority-color': priority.priorityColor ?? priority.color,
@@ -68,14 +77,28 @@ export default function IncidentMapPage() {
   const [coordinateQuery, setCoordinateQuery] = useState('');
   const [coordinateError, setCoordinateError] = useState('');
   const [searchPosition, setSearchPosition] = useState(null);
+  const [queueStatus, setQueueStatus] = useState('ALL');
+  const [queueType, setQueueType] = useState('ALL');
+  const [queueTimeRange, setQueueTimeRange] = useState('ALL');
+  const [queueSort, setQueueSort] = useState('NEWEST');
   const [updatedAt, setUpdatedAt] = useState(null);
   const latestRequestId = useRef(0);
+  const queueIncidents = filterAndSortIncidents(mapRecords, {
+    status: queueStatus,
+    type: queueType,
+    timeRange: queueTimeRange,
+    sortBy: queueSort,
+  });
   const locatedIncidents = getMappableIncidents(mapRecords);
-  const initialMapCenter = locatedIncidents.length
-    ? getIncidentCoordinates(locatedIncidents[0]) : [0, 0];
-  const selectedIncident = locatedIncidents.find((incident) => incident.id === selectedId) || null;
+  const visibleLocatedIncidents = getMappableIncidents(queueIncidents);
+  const initialMapCenter = visibleLocatedIncidents.length
+    ? getIncidentCoordinates(visibleLocatedIncidents[0]) : [0, 0];
+  const selectedIncident = queueIncidents.find((incident) => incident.id === selectedId)
+    || queueIncidents[0] || null;
   const selectedPresentation = selectedIncident ? getMarkerPresentation(selectedIncident) : null;
-  const visibleStatuses = [...new Set(locatedIncidents.map((incident) => getMarkerPresentation(incident).statusClass))];
+  const visibleStatuses = [...new Set(visibleLocatedIncidents.map((incident) => getMarkerPresentation(incident).statusClass))];
+  const queueStatuses = [...new Set(mapRecords.map((incident) => incident.status).filter(Boolean))].sort();
+  const queueTypes = [...new Set(mapRecords.map((incident) => incident.report?.disaster_type).filter(Boolean))].sort();
 
   function locateCoordinates(event) {
     event.preventDefault();
@@ -109,8 +132,8 @@ export default function IncidentMapPage() {
         const latest = mergeReportsWithIncidents(reports, incidents);
         const located = getMappableIncidents(latest);
         setMapRecords(latest);
-        setSelectedId((current) => located.some((incident) => incident.id === current)
-          ? current : located[0]?.id ?? null);
+        setSelectedId((current) => latest.some((incident) => incident.id === current)
+          ? current : located[0]?.id ?? latest[0]?.id ?? null);
         setUpdatedAt(new Date());
         setError('');
       } catch (requestError) {
@@ -164,8 +187,8 @@ export default function IncidentMapPage() {
       <section className="page-heading incident-map-heading">
         <div>
           <div className="eyebrow"><span className="eyebrow__line" />COORDINATOR OPERATIONS</div>
-          <h1>Incident map<span className="heading-period">.</span></h1>
-          <p>Submitted reports appear before review; their priority and nearby resources are available after confirmation.</p>
+          <h1>Incident queue<span className="heading-period">.</span></h1>
+          <p>Filter and prioritize incoming reports and confirmed incidents, then explore their locations and nearby resources.</p>
         </div>
         <div className="incident-map-heading__actions">
           <Link className="button button--primary" to="/review">Coordinator review & planning</Link>
@@ -203,18 +226,18 @@ export default function IncidentMapPage() {
         <div className="panel incident-map-state" role="status">
           <LoaderCircle className="location-spinner" size={20} />Loading confirmed incidents…
         </div>
-      ) : locatedIncidents.length === 0 && !searchPosition ? (
+      ) : mapRecords.length === 0 && !searchPosition ? (
         <div className="panel incident-map-state incident-map-state--empty">
           <MapIcon size={22} />
-          <strong>{mapRecords.length ? 'No saved locations are valid for the map.' : 'No saved reports or confirmed incidents yet.'}</strong>
-          <span>{mapRecords.length ? `${mapRecords.length} record${mapRecords.length === 1 ? '' : 's'} cannot be placed on the map.` : 'New reports and confirmed incidents will appear here.'}</span>
+          <strong>No saved reports or confirmed incidents yet.</strong>
+          <span>New reports and confirmed incidents will appear here.</span>
           <Link className="button button--quiet" to="/review">Open report review</Link>
         </div>
       ) : (
         <>
-          {locatedIncidents.length === 0 && searchPosition && (
+          {locatedIncidents.length === 0 && !searchPosition && (
             <p className="incident-map-coordinate-note" role="status">
-              No located incidents to display. Showing the requested coordinates only.
+              No saved records have valid coordinates. The incident queue is still available below.
             </p>
           )}
           {mapRecords.length > locatedIncidents.length && (
@@ -224,9 +247,91 @@ export default function IncidentMapPage() {
             </div>
           )}
           <div className="incident-map-toolbar">
-            <span>{locatedIncidents.length} LOCATED RECORD{locatedIncidents.length === 1 ? '' : 'S'}</span>
+            <span>{visibleLocatedIncidents.length} LOCATED RECORD{visibleLocatedIncidents.length === 1 ? '' : 'S'} ON MAP</span>
             <span role="status">{updatedAt ? `Updated ${updatedAt.toLocaleTimeString()}` : 'Waiting for saved data'}</span>
           </div>
+          <section className="incident-queue" aria-label="Incident queue">
+            <div className="incident-queue__heading">
+              <div>
+                <h2>Incident queue</h2>
+                <p>{queueIncidents.length} of {mapRecords.length} records match the selected conditions.</p>
+              </div>
+              <button className="button button--quiet" type="button"
+                onClick={() => {
+                  setQueueStatus('ALL');
+                  setQueueType('ALL');
+                  setQueueTimeRange('ALL');
+                  setQueueSort('NEWEST');
+                }}>
+                Clear filters
+              </button>
+            </div>
+            <div className="incident-queue__filters">
+              <label>
+                Status
+                <select value={queueStatus} onChange={(event) => setQueueStatus(event.target.value)}>
+                  <option value="ALL">All statuses</option>
+                  {queueStatuses.map((status) => <option key={status} value={status}>{displayValue(status)}</option>)}
+                </select>
+              </label>
+              <label>
+                Type
+                <select value={queueType} onChange={(event) => setQueueType(event.target.value)}>
+                  <option value="ALL">All types</option>
+                  {queueTypes.map((type) => <option key={type} value={type}>{displayValue(type)}</option>)}
+                </select>
+              </label>
+              <label>
+                Time period
+                <select value={queueTimeRange} onChange={(event) => setQueueTimeRange(event.target.value)}>
+                  <option value="ALL">All time</option>
+                  <option value="24H">Last 24 hours</option>
+                  <option value="7D">Last 7 days</option>
+                  <option value="30D">Last 30 days</option>
+                </select>
+              </label>
+              <label>
+                Sort by
+                <select value={queueSort} onChange={(event) => setQueueSort(event.target.value)}>
+                  <option value="NEWEST">Newest first</option>
+                  <option value="OLDEST">Oldest first</option>
+                  <option value="PRIORITY_HIGH">Highest priority</option>
+                  <option value="PRIORITY_LOW">Lowest priority</option>
+                </select>
+              </label>
+            </div>
+            {queueIncidents.length ? (
+              <ul className="incident-queue__items">
+                {queueIncidents.map((incident) => {
+                  const presentation = getMarkerPresentation(incident);
+                  const timestamp = incidentTime(incident);
+                  return (
+                    <li key={incident.id}>
+                      <button type="button" className={`incident-map-item${incident.id === selectedIncident?.id ? ' incident-map-item--active' : ''}`}
+                        onClick={() => selectIncident(incident.id)}
+                        aria-label={`${displayValue(incident.report?.disaster_type)}, ${displayValue(incident.status)} status, ${presentation.priorityLabel} priority`}
+                        aria-current={incident.id === selectedIncident?.id ? 'true' : undefined}>
+                        <span className={`incident-map-item__status incident-map-item__status--${presentation.statusClass}`} />
+                        <span className="incident-map-item__text">
+                          <strong>{displayValue(incident.report?.disaster_type)}</strong>
+                          <small>{incident.report?.location_name || 'Location unavailable'}</small>
+                        </span>
+                        <span className="incident-map-item__status-label">{displayValue(incident.status)}</span>
+                        <span className="incident-map-item__priority" style={priorityStyle(presentation)}>
+                          {presentation.priorityLabel}
+                        </span>
+                        <time className="incident-queue__time" dateTime={timestamp || undefined}>
+                          {formatIncidentTime(timestamp)}
+                        </time>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="incident-queue__empty" role="status">No records match these filters.</p>
+            )}
+          </section>
           <div className="incident-map-layout">
             <div className="incident-map-frame" aria-label="Map of confirmed incidents">
               <MapContainer center={initialMapCenter} zoom={locatedIncidents.length ? 6 : 2} scrollWheelZoom className="incident-map-canvas">
@@ -271,9 +376,9 @@ export default function IncidentMapPage() {
                     </Popup>
                   </CircleMarker>
                 ))}
-                {locatedIncidents.map((incident) => {
+                {visibleLocatedIncidents.map((incident) => {
                   const position = getIncidentCoordinates(incident);
-                  const selected = incident.id === selectedId;
+                  const selected = incident.id === selectedIncident?.id;
                   return (
                     <Marker key={incident.id} position={position}
                       icon={markerIcon(incident, selected)} keyboard
@@ -285,6 +390,11 @@ export default function IncidentMapPage() {
                   );
                 })}
               </MapContainer>
+              {visibleLocatedIncidents.length === 0 && !searchPosition && (
+                <span className="incident-map-no-results" role="status">
+                  No matching records with valid map coordinates.
+                </span>
+              )}
               <span className="incident-map-attribution">Map data © OpenStreetMap contributors</span>
             </div>
 
@@ -307,30 +417,6 @@ export default function IncidentMapPage() {
                 </div>
                 <div className="incident-map-legend__note">Larger markers indicate higher priority.</div>
                 <div className="incident-map-legend__note">Submitted reports are pending review and are not priority-scored yet.</div>
-              </section>
-
-              <section className="incident-map-list" aria-label="Located reports and incidents">
-                <h2>Located reports &amp; incidents <span>{locatedIncidents.length}</span></h2>
-                <ul>
-                  {locatedIncidents.map((incident) => (
-                    <li key={incident.id}>
-                      <button type="button" className={`incident-map-item${incident.id === selectedId ? ' incident-map-item--active' : ''}`}
-                        onClick={() => selectIncident(incident.id)}
-                        aria-label={`${displayValue(incident.report.disaster_type)}, ${displayValue(incident.status)} status, ${getMarkerPresentation(incident).priorityLabel} priority`}
-                        aria-current={incident.id === selectedId ? 'true' : undefined}>
-                        <span className={`incident-map-item__status incident-map-item__status--${getMarkerPresentation(incident).statusClass}`} />
-                        <span className="incident-map-item__text">
-                          <strong>{displayValue(incident.report.disaster_type)}</strong>
-                          <small>{incident.report.location_name || `${incident.report.latitude}, ${incident.report.longitude}`}</small>
-                        </span>
-                        <span className="incident-map-item__status-label">{displayValue(incident.status)}</span>
-                        <span className="incident-map-item__priority" style={priorityStyle(getMarkerPresentation(incident))}>
-                          {getMarkerPresentation(incident).priorityLabel}
-                        </span>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
               </section>
 
               {selectedIncident && (

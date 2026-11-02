@@ -6,6 +6,7 @@ export const PRIORITY_LEVELS = [
 ];
 
 const PRIORITY_BY_BAND = Object.fromEntries(PRIORITY_LEVELS.map((priority) => [priority.band, priority]));
+const PRIORITY_RANK = { LOW: 1, MEDIUM: 2, HIGH: 3, CRITICAL: 4 };
 const UNRATED_PRIORITY = {
   band: 'UNRATED',
   label: 'Unrated',
@@ -70,6 +71,7 @@ export function mergeReportsWithIncidents(reports, incidents) {
           latitude: report.latitude,
           longitude: report.longitude,
           location_name: report.location_name,
+          submitted_at: report.submitted_at,
         },
       };
     });
@@ -78,6 +80,54 @@ export function mergeReportsWithIncidents(reports, incidents) {
     (incident) => !reportIds.has(incident.report_id),
   );
   return [...reportRecords, ...incidentRecordsWithoutReport];
+}
+
+function incidentTimestamp(incident) {
+  const timestamp = incident?.confirmed_at || incident?.report?.submitted_at;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function filterAndSortIncidents(incidents, {
+  status = 'ALL',
+  type = 'ALL',
+  timeRange = 'ALL',
+  sortBy = 'NEWEST',
+  now = Date.now(),
+} = {}) {
+  const rangeMs = { '24H': 24 * 60 * 60 * 1000, '7D': 7 * 24 * 60 * 60 * 1000, '30D': 30 * 24 * 60 * 60 * 1000 }[timeRange];
+  const normalizedStatus = String(status || 'ALL').toUpperCase();
+  const normalizedType = String(type || 'ALL').toUpperCase();
+  const filtered = (Array.isArray(incidents) ? incidents : []).filter((incident) => {
+    if (normalizedStatus !== 'ALL' && String(incident?.status || '').toUpperCase() !== normalizedStatus) return false;
+    if (normalizedType !== 'ALL' && String(incident?.report?.disaster_type || '').toUpperCase() !== normalizedType) return false;
+    if (rangeMs !== undefined) {
+      const timestamp = incidentTimestamp(incident);
+      if (timestamp === null || timestamp < now - rangeMs) return false;
+    }
+    return true;
+  });
+
+  return filtered.sort((first, second) => {
+    if (sortBy === 'PRIORITY_HIGH' || sortBy === 'PRIORITY_LOW') {
+      const firstRank = PRIORITY_RANK[String(first?.priority_band || '').toUpperCase()] || 0;
+      const secondRank = PRIORITY_RANK[String(second?.priority_band || '').toUpperCase()] || 0;
+      if ((firstRank === 0) !== (secondRank === 0)) return firstRank === 0 ? 1 : -1;
+      const direction = sortBy === 'PRIORITY_HIGH' ? -1 : 1;
+      const rankDifference = (firstRank - secondRank) * direction;
+      if (rankDifference) return rankDifference;
+      const scoreDifference = (Number(first?.priority_score) || 0) - (Number(second?.priority_score) || 0);
+      if (scoreDifference) return scoreDifference * direction;
+    } else {
+      const firstTime = incidentTimestamp(first);
+      const secondTime = incidentTimestamp(second);
+      if ((firstTime === null) !== (secondTime === null)) return firstTime === null ? 1 : -1;
+      if (firstTime !== null && secondTime !== null && firstTime !== secondTime) {
+        return (firstTime - secondTime) * (sortBy === 'OLDEST' ? 1 : -1);
+      }
+    }
+    return 0;
+  });
 }
 
 export function getMarkerPresentation(incident) {
