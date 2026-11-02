@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { AlertCircle, Check, CircleCheck, CircleX, LoaderCircle, Save, Search, ShieldAlert, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, CircleCheck, CircleX, FileDown, LoaderCircle, Save, Search, ShieldAlert, Trash2, X } from 'lucide-react';
 import {
   approveResponsePlan,
   assignResponsePlanResources,
@@ -11,6 +11,7 @@ import {
   detectPotentialReportRelationships,
   deleteReport,
   dismissReport,
+  exportIncidents,
   generateResponsePlan,
   getIncident,
   getReport,
@@ -67,6 +68,40 @@ export default function ReviewPage() {
   const [linkReason, setLinkReason] = useState('');
   const [unlinkReason, setUnlinkReason] = useState('');
   const [deleteReason, setDeleteReason] = useState('');
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState('csv');
+  const [exportStatus, setExportStatus] = useState('');
+  const [exportPriority, setExportPriority] = useState('');
+  const [exportDisasterType, setExportDisasterType] = useState('');
+  const [exportSearch, setExportSearch] = useState('');
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportError, setExportError] = useState(null);
+  const [exportSuccess, setExportSuccess] = useState(null);
+
+  async function handleExportSubmit(e) {
+    e.preventDefault();
+    setExportBusy(true);
+    setExportError(null);
+    setExportSuccess(null);
+    try {
+      const result = await exportIncidents({
+        format: exportFormat,
+        status: exportStatus,
+        priority: exportPriority,
+        disasterType: exportDisasterType,
+        search: exportSearch,
+      });
+      setExportSuccess(`Export downloaded successfully (${result.filename}).`);
+      setTimeout(() => {
+        setShowExportModal(false);
+        setExportSuccess(null);
+      }, 1500);
+    } catch (err) {
+      setExportError(err.message || 'Export failed. Please check filters.');
+    } finally {
+      setExportBusy(false);
+    }
+  }
   const selected = reports.find((report) => report.id === selectedId) || null;
   const selectedIncidentLink = selected?.incident_links?.[0] || null;
   const availableAssignmentResources = assignmentResources.filter(
@@ -654,6 +689,19 @@ export default function ReviewPage() {
             Semantic search {semanticSearchEnabled ? 'on' : 'off'}
           </button>
           <button
+            className="button button--quiet"
+            type="button"
+            onClick={() => {
+              setShowExportModal(true);
+              setExportError(null);
+              setExportSuccess(null);
+            }}
+            title="Export incident data as CSV or JSON"
+          >
+            <FileDown size={15} />
+            Export incidents
+          </button>
+          <button
             className="button button--primary"
             type="button"
             disabled={!selected || selected.status === 'DISMISSED' || detectingRelationships}
@@ -666,6 +714,138 @@ export default function ReviewPage() {
           </button>
         </div>
       </section>
+      {showExportModal && (
+        <div className="modal-backdrop" onClick={() => !exportBusy && setShowExportModal(false)}>
+          <div className="panel modal-card" onClick={(e) => e.stopPropagation()} role="dialog" aria-labelledby="export-dialog-title">
+            <div className="panel-heading">
+              <div>
+                <span className="section-kicker">INCIDENT DATA EXPORT</span>
+                <h2 id="export-dialog-title">Export incident records</h2>
+              </div>
+              <button
+                className="header-link header-link--button"
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                disabled={exportBusy}
+                aria-label="Close export dialog"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleExportSubmit}>
+              <div className="field-grid">
+                <label className="field">
+                  <span>Format <b>*</b></span>
+                  <select
+                    value={exportFormat}
+                    onChange={(e) => setExportFormat(e.target.value)}
+                    disabled={exportBusy}
+                  >
+                    <option value="csv">CSV (Spreadsheet)</option>
+                    <option value="json">JSON (Structured records)</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Incident Status</span>
+                  <select
+                    value={exportStatus}
+                    onChange={(e) => setExportStatus(e.target.value)}
+                    disabled={exportBusy}
+                  >
+                    <option value="">All statuses</option>
+                    <option value="CONFIRMED">CONFIRMED</option>
+                    <option value="ACTIVE">ACTIVE</option>
+                    <option value="CLOSED">CLOSED</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="field-grid">
+                <label className="field">
+                  <span>Priority Level</span>
+                  <select
+                    value={exportPriority}
+                    onChange={(e) => setExportPriority(e.target.value)}
+                    disabled={exportBusy}
+                  >
+                    <option value="">All priority bands</option>
+                    <option value="CRITICAL">CRITICAL</option>
+                    <option value="HIGH">HIGH</option>
+                    <option value="MEDIUM">MEDIUM</option>
+                    <option value="LOW">LOW</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Disaster Category</span>
+                  <select
+                    value={exportDisasterType}
+                    onChange={(e) => setExportDisasterType(e.target.value)}
+                    disabled={exportBusy}
+                  >
+                    <option value="">All categories</option>
+                    <option value="FLOOD">Flood</option>
+                    <option value="FIRE">Fire</option>
+                    <option value="EARTHQUAKE">Earthquake</option>
+                    <option value="LANDSLIDE">Landslide</option>
+                    <option value="CYCLONE">Cyclone</option>
+                    <option value="ROAD_ACCIDENT">Road accident</option>
+                    <option value="BUILDING_COLLAPSE">Building collapse</option>
+                    <option value="MEDICAL_EMERGENCY">Medical emergency</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="field">
+                <span>Search keyword or location <small>OPTIONAL</small></span>
+                <input
+                  type="text"
+                  placeholder="Filter by description or place name…"
+                  value={exportSearch}
+                  onChange={(e) => setExportSearch(e.target.value)}
+                  disabled={exportBusy}
+                />
+              </label>
+
+              {exportError && (
+                <div className="notice notice--error" role="alert" style={{ marginTop: '12px' }}>
+                  <AlertCircle size={15} />
+                  {exportError}
+                </div>
+              )}
+
+              {exportSuccess && (
+                <div className="notice" role="status" style={{ marginTop: '12px', background: 'var(--color-brand-wash)', color: 'var(--color-brand)', borderColor: 'var(--color-brand)' }}>
+                  <Check size={15} />
+                  {exportSuccess}
+                </div>
+              )}
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '18px' }}>
+                <button
+                  type="button"
+                  className="button button--quiet"
+                  onClick={() => setShowExportModal(false)}
+                  disabled={exportBusy}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="button button--primary"
+                  disabled={exportBusy}
+                >
+                  {exportBusy ? <LoaderCircle size={15} className="location-spinner" /> : <FileDown size={15} />}
+                  {exportBusy ? 'Downloading…' : `Download ${exportFormat.toUpperCase()}`}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       {message && <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>{message.kind === 'error' ? <AlertCircle size={17} /> : <Check size={17} />}{message.text}</div>}
       <section className="panel report-match-queue" aria-labelledby="potential-relationships-title">
         <div className="report-match-queue__heading">

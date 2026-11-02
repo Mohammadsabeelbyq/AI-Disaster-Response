@@ -1,5 +1,6 @@
 import { Activity, ClipboardCheck, FileJson2, FileText, LogOut, Map as MapIcon, SlidersHorizontal, Truck } from 'lucide-react';
 import { NavLink, useLocation } from 'react-router-dom';
+import NotificationCenter from './NotificationCenter.jsx';
 
 export default function AppShell({ children, user = null, onSignOut }) {
   const location = useLocation();
@@ -46,11 +47,14 @@ export default function AppShell({ children, user = null, onSignOut }) {
                 </NavLink>
               )}
             </nav>
-            <div className="account-menu">
-              <span className="account-role">{user.role === 'MANAGEMENT' ? 'COORDINATOR' : user.role}</span>
-              <button className="header-link header-link--button" type="button" onClick={onSignOut}>
-                <LogOut size={16} />Sign out
-              </button>
+            <div className="header-actions-group">
+              <NotificationCenter user={user} />
+              <div className="account-menu">
+                <span className="account-role">{user.role === 'MANAGEMENT' ? 'COORDINATOR' : user.role}</span>
+                <button className="header-link header-link--button" type="button" onClick={onSignOut}>
+                  <LogOut size={16} />Sign out
+                </button>
+              </div>
             </div>
           </div>
         )}

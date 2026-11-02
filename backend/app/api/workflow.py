@@ -1,7 +1,7 @@
-"""Management-owned report review and human-supervised response planning APIs."""
+from datetime import datetime, timezone
 import uuid
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy.orm import Session
 
 from app.api.deps import require_roles
@@ -25,8 +25,7 @@ from app.schemas.resources import (
     ResourceAssignmentInput,
     ResourceAssignmentReleaseInput,
 )
-from app.services import incident_service
-from app.services import impact_area_service, resource_service
+from app.services import export_service, impact_area_service, incident_service, resource_service
 
 management_user = Depends(require_roles("MANAGEMENT", "ADMIN"))
 reports_router = APIRouter(tags=["incident-workflow"])
@@ -94,6 +93,56 @@ def reopen_dismissed_report(
 @incidents_router.get("", response_model=list[IncidentOut])
 def list_incidents(db: Session = Depends(get_db), user: User = management_user):
     return incident_service.list_incidents(db)
+
+
+@incidents_router.get("/export")
+def export_incidents(
+    format: str = Query("csv", description="Export format: csv or json"),
+    status: str | None = Query(None, description="Filter by incident status (CONFIRMED, CLOSED, ACTIVE)"),
+    priority: str | None = Query(None, description="Filter by priority band (CRITICAL, HIGH, MEDIUM, LOW)"),
+    disaster_type: str | None = Query(None, description="Filter by disaster category"),
+    start_date: str | None = Query(None, description="Filter incidents confirmed after ISO date"),
+    end_date: str | None = Query(None, description="Filter incidents confirmed before ISO date"),
+    search: str | None = Query(None, description="Search term in location or description"),
+    db: Session = Depends(get_db),
+    user: User = management_user,
+):
+    fmt = format.strip().lower()
+    if fmt not in ("csv", "json"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported export format '{format}'. Supported formats: csv, json.",
+        )
+
+    incidents = export_service.query_export_incidents(
+        db,
+        status=status,
+        priority=priority,
+        disaster_type=disaster_type,
+        start_date=start_date,
+        end_date=end_date,
+        search=search,
+    )
+    records = [export_service.serialize_incident_record(inc) for inc in incidents]
+
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"incidents_export_{timestamp}.{fmt}"
+
+    if fmt == "csv":
+        content = export_service.export_incidents_as_csv(records)
+        media_type = "text/csv; charset=utf-8"
+    else:
+        content = export_service.export_incidents_as_json(records)
+        media_type = "application/json; charset=utf-8"
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Access-Control-Expose-Headers": "Content-Disposition",
+        },
+    )
 
 
 @incidents_router.get("/{incident_id}", response_model=IncidentOut)

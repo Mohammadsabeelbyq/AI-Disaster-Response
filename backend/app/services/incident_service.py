@@ -218,6 +218,19 @@ def override_incident_priority(db: Session, incident_id: uuid.UUID, actor_id: uu
     )
     db.commit()
     db.refresh(incident)
+    try:
+        from app.services import notification_service
+        notification_service.notify_incident_priority_changed(
+            db,
+            incident,
+            old_band=incident.priority_original_band,
+            new_band=final_band,
+            is_override=True,
+            reason=reason_text,
+        )
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify priority override: %s", notif_err)
     return incident
 
 
@@ -239,6 +252,12 @@ def confirm_report(db: Session, report_id: uuid.UUID, actor_id: uuid.UUID) -> In
     _audit(db, actor_id, "INCIDENT_CONFIRMED", report_id=report.id,
            incident_id=incident.id, details={"report_status": ReportStatus.ACCEPTED})
     db.commit()
+    try:
+        from app.services import notification_service
+        notification_service.notify_new_incident(db, incident)
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify new incident: %s", notif_err)
     return get_incident(db, incident.id)
 
 
@@ -678,6 +697,14 @@ def close_incident(db: Session, incident_id: uuid.UUID, actor_id: uuid.UUID,
         incident_id=incident.id, details={"reason": reason_text},
     )
     db.commit()
+    try:
+        from app.services import notification_service
+        notification_service.notify_incident_status_changed(
+            db, incident, old_status="CONFIRMED", new_status="CLOSED", reason=reason_text
+        )
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify incident closed: %s", notif_err)
     db.expire_all()
     return get_incident(db, incident.id)
 
@@ -696,6 +723,14 @@ def reopen_incident(db: Session, incident_id: uuid.UUID, actor_id: uuid.UUID,
         incident_id=incident.id, details={"reason": reason_text},
     )
     db.commit()
+    try:
+        from app.services import notification_service
+        notification_service.notify_incident_status_changed(
+            db, incident, old_status="CLOSED", new_status="ACTIVE", reason=reason_text
+        )
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify incident reopened: %s", notif_err)
     db.expire_all()
     return get_incident(db, incident.id)
 
@@ -814,6 +849,18 @@ def assign_response_plan_resources(
         )
         if result.rowcount != 1:
             db.rollback()
+            try:
+                from app.services import notification_service
+                notification_service.notify_operation_failed(
+                    db,
+                    "Resource Assignment",
+                    f"Resource {resource.code} became unavailable before assignment.",
+                    incident_id=incident.id,
+                    plan_id=plan.id,
+                )
+                db.commit()
+            except Exception:
+                pass
             raise Conflict(
                 f"Resource {resource.code} became unavailable before assignment. "
                 "Refresh the response plan and try again."
@@ -858,8 +905,37 @@ def assign_response_plan_resources(
     )
     try:
         db.commit()
+        try:
+            from app.services import notification_service
+            assignments = db.scalars(
+                select(ResourceAssignment).where(
+                    ResourceAssignment.plan_id == plan.id,
+                    ResourceAssignment.assigned_at == now,
+                )
+            ).all()
+            for assignment in assignments:
+                res = current_resources.get(assignment.resource_id)
+                res_label = res.name if res else None
+                notification_service.notify_assignment_confirmed(
+                    db, assignment, resource_label=res_label
+                )
+            db.commit()
+        except Exception as notif_err:
+            logger.error("Failed to notify confirmed assignments: %s", notif_err)
     except IntegrityError as exc:
         db.rollback()
+        try:
+            from app.services import notification_service
+            notification_service.notify_operation_failed(
+                db,
+                "Resource Assignment",
+                "A resource was assigned concurrently. Refresh the response plan.",
+                incident_id=incident.id,
+                plan_id=plan.id,
+            )
+            db.commit()
+        except Exception:
+            pass
         raise Conflict("A resource was assigned concurrently. Refresh the response plan.") from exc
     return get_response_plan(db, plan.id)
 
@@ -1694,6 +1770,12 @@ def generate_response_plan(
                                      "recommended_resource_count": len(resource_candidates)})
     db.commit()
     db.refresh(plan)
+    try:
+        from app.services import notification_service
+        notification_service.notify_plan_awaiting_approval(db, plan)
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify plan awaiting approval: %s", notif_err)
     return plan
 
 
@@ -1706,7 +1788,16 @@ def decide_response_plan(db: Session, plan_id: uuid.UUID, actor_id: uuid.UUID,
     if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
         raise Conflict("Only plans for open, canonical incidents can be decided.")
     if plan.status != "AWAITING_APPROVAL":
-        raise Conflict(f"Only AWAITING_APPROVAL plans can be decided (current status: {plan.status}).")
+        err_msg = f"Only AWAITING_APPROVAL plans can be decided (current status: {plan.status})."
+        try:
+            from app.services import notification_service
+            notification_service.notify_operation_failed(
+                db, "Plan Decision", err_msg, incident_id=plan.incident_id, plan_id=plan.id
+            )
+            db.commit()
+        except Exception:
+            pass
+        raise Conflict(err_msg)
     if decision not in {"APPROVED", "REJECTED"}:
         raise ValueError("Decision must be APPROVED or REJECTED.")
 
@@ -1718,4 +1809,10 @@ def decide_response_plan(db: Session, plan_id: uuid.UUID, actor_id: uuid.UUID,
            plan_id=plan.id, details={"reason": reason or "", "status": decision})
     db.commit()
     db.refresh(plan)
+    try:
+        from app.services import notification_service
+        notification_service.notify_plan_decided(db, plan, decision, reason)
+        db.commit()
+    except Exception as notif_err:
+        logger.error("Failed to notify plan decision: %s", notif_err)
     return plan

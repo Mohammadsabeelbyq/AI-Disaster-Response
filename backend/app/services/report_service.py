@@ -46,6 +46,20 @@ def create_report(db: Session, data: ReportCreate, image: ValidatedImage | None 
         )
         db.add(report)
         db.commit()
+        try:
+            from app.services import notification_service
+            disaster = report.disaster_type.replace('_', ' ').title()
+            loc = report.location_name or f"{report.latitude}, {report.longitude}"
+            notification_service.notify_coordinators(
+                db,
+                notification_type="NEW_REPORT",
+                title=f"New Report: {disaster}",
+                message=f"A new report has been submitted at {loc}.",
+                dedupe_key_prefix=f"new_report:{report.id}",
+            )
+            db.commit()
+        except Exception as notif_err:
+            log.error("Failed to notify new report: %s", notif_err)
     except (SQLAlchemyError, OSError) as exc:
         db.rollback()
         if stored_path:

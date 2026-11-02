@@ -18,6 +18,7 @@ export default defineConfig({
     proxy: {
       '/auth': 'http://127.0.0.1:8000',
       '/reports': 'http://127.0.0.1:8000',
+      '/notifications': 'http://127.0.0.1:8000',
       '/report-relationships': 'http://127.0.0.1:8000',
       '/incidents': {
         target: 'http://127.0.0.1:8000',

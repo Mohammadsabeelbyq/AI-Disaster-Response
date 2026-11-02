@@ -194,3 +194,54 @@ export function releaseResponsePlanAssignment(planId, assignmentId, reason) {
     },
   );
 }
+
+export async function exportIncidents({
+  format = 'csv',
+  status = '',
+  priority = '',
+  disasterType = '',
+  startDate = '',
+  endDate = '',
+  search = '',
+} = {}) {
+  const params = new URLSearchParams({ format });
+  if (status) params.set('status', status);
+  if (priority) params.set('priority', priority);
+  if (disasterType) params.set('disaster_type', disasterType);
+  if (startDate) params.set('start_date', startDate);
+  if (endDate) params.set('end_date', endDate);
+  if (search) params.set('search', search);
+
+  const response = await fetch(`/incidents/export?${params}`, {
+    credentials: 'include',
+  });
+
+  if (!response.ok) {
+    let errorMessage = 'Export failed.';
+    try {
+      const errData = await response.json();
+      errorMessage = errData.detail || errData.message || errorMessage;
+    } catch {
+      // not json
+    }
+    throw new Error(errorMessage);
+  }
+
+  const disposition = response.headers.get('content-disposition') || '';
+  let filename = `incidents_export.${format}`;
+  const match = disposition.match(/filename="?([^"]+)"?/);
+  if (match && match[1]) {
+    filename = match[1];
+  }
+
+  const blob = await response.blob();
+  const url = window.URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.URL.revokeObjectURL(url);
+  return { filename, size: blob.size };
+}
