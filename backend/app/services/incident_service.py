@@ -803,6 +803,88 @@ def get_response_plan(db: Session, plan_id: uuid.UUID) -> ResponsePlan:
     return plan
 
 
+def _response_plan_context_snapshot(
+    db: Session,
+    incident: Incident,
+    resource_ids: list[uuid.UUID],
+) -> dict:
+    extraction = incident.report.extraction
+    impact_area = incident.impact_area
+    incident_context = {
+        "id": str(incident.id),
+        "status": incident.status,
+        "merged_into_id": str(incident.merged_into_id) if incident.merged_into_id else None,
+        "disaster_type": incident.report.disaster_type,
+        "latitude": float(incident.report.map_latitude),
+        "longitude": float(incident.report.map_longitude),
+        "facts": dict(extraction.effective_facts) if extraction is not None else {},
+        "priority_score": incident.priority_score,
+        "priority_band": incident.priority_band,
+        "impact_area": {
+            "geometry_type": impact_area.geometry_type,
+            "radius_m": impact_area.radius_m,
+            "polygon": impact_area.polygon,
+        } if impact_area is not None else None,
+    }
+
+    if not resource_ids:
+        return {"incident": incident_context, "resources": []}
+
+    resources = db.scalars(
+        select(Resource)
+        .options(joinedload(Resource.department))
+        .where(Resource.id.in_(resource_ids))
+        .execution_options(populate_existing=True)
+    ).all()
+    resources_by_id = {resource.id: resource for resource in resources}
+    active_assignment_ids = set(db.scalars(
+        select(ResourceAssignment.resource_id).where(
+            ResourceAssignment.resource_id.in_(resource_ids),
+            ResourceAssignment.released_at.is_(None),
+        )
+    ).all())
+
+    resource_context = []
+    for resource_id in sorted(resource_ids, key=str):
+        resource = resources_by_id.get(resource_id)
+        if resource is None:
+            resource_context.append({"id": str(resource_id), "missing": True})
+            continue
+        resource_context.append({
+            "id": str(resource.id),
+            "department_id": str(resource.department_id),
+            "department_active": resource.department.is_active,
+            "resource_type": resource.resource_type,
+            "capabilities": sorted(resource.capabilities or []),
+            "capacity": resource.capacity,
+            "availability": resource.availability,
+            "latitude": float(resource.latitude) if resource.latitude is not None else None,
+            "longitude": float(resource.longitude) if resource.longitude is not None else None,
+            "has_active_assignment": resource.id in active_assignment_ids,
+        })
+
+    return {"incident": incident_context, "resources": resource_context}
+
+
+def _mark_response_plan_stale(
+    db: Session,
+    plan: ResponsePlan,
+    actor_id: uuid.UUID,
+    reason: str,
+) -> None:
+    plan.status = "STALE"
+    _audit(
+        db,
+        actor_id,
+        "RESPONSE_PLAN_STALE",
+        incident_id=plan.incident_id,
+        plan_id=plan.id,
+        details={"reason": reason},
+    )
+    db.commit()
+    db.refresh(plan)
+
+
 def assign_response_plan_resources(
     db: Session,
     plan_id: uuid.UUID,
@@ -816,6 +898,18 @@ def assign_response_plan_resources(
     incident = get_incident(db, plan.incident_id)
     if incident.status not in {"CONFIRMED", "ACTIVE"} or incident.merged_into_id is not None:
         raise Conflict("Resources can only be assigned to an active canonical incident.")
+    db.scalar(
+        select(Incident.id)
+        .where(Incident.id == incident.id)
+        .with_for_update()
+    )
+    if plan.context_snapshot is None:
+        _mark_response_plan_stale(db, plan, actor_id, "context_snapshot_missing")
+        raise Conflict("This response plan has no validation snapshot and must be regenerated.")
+    current_incident_context = _response_plan_context_snapshot(db, incident, [])["incident"]
+    if current_incident_context != plan.context_snapshot.get("incident"):
+        _mark_response_plan_stale(db, plan, actor_id, "incident_context_changed")
+        raise Conflict("The incident changed after approval. Regenerate and review the response plan.")
 
     reason_text = reason.strip()
     if not reason_text:
@@ -848,9 +942,12 @@ def assign_response_plan_resources(
         for resource in db.scalars(
             select(Resource)
             .join(Department, Resource.department_id == Department.id)
+            .options(joinedload(Resource.department))
             .where(
                 Resource.id.in_(resource_ids),
                 Resource.availability == "AVAILABLE",
+                Resource.capacity.is_not(None),
+                Resource.capacity > 0,
                 Department.is_active.is_(True),
                 Resource.resource_type.is_not(None),
                 Resource.latitude.is_not(None),
@@ -858,6 +955,7 @@ def assign_response_plan_resources(
                 ~active_assignment,
             )
             .with_for_update()
+            .execution_options(populate_existing=True)
         ).all()
     }
     if not set(resource_ids) <= current_resources.keys():
@@ -865,6 +963,33 @@ def assign_response_plan_resources(
             "One or more selected resources are no longer available or operationally eligible. "
             "Refresh the resource list before assigning."
         )
+    _, _, eligible_candidates = resource_service.find_resource_matches(db, incident)
+    eligible_resource_ids = {resource.id for resource, _, _ in eligible_candidates}
+    if not set(resource_ids) <= eligible_resource_ids:
+        raise Conflict(
+            "One or more selected resources no longer meet this incident's capability "
+            "or location and capacity requirements."
+        )
+
+    extraction = incident.report.extraction
+    facts = extraction.effective_facts if extraction is not None else {}
+    affected_people = (facts or {}).get("affected_persons")
+    if isinstance(affected_people, int) and not isinstance(affected_people, bool):
+        already_assigned_capacity = db.scalar(
+            select(func.coalesce(func.sum(Resource.capacity), 0))
+            .join(ResourceAssignment, ResourceAssignment.resource_id == Resource.id)
+            .where(
+                ResourceAssignment.incident_id == incident.id,
+                ResourceAssignment.released_at.is_(None),
+            )
+        ) or 0
+        selected_capacity = sum(current_resources[resource_id].capacity for resource_id in resource_ids)
+        total_capacity = already_assigned_capacity + selected_capacity
+        if total_capacity < affected_people:
+            raise Conflict(
+                f"Assigned resources support {total_capacity} people, "
+                f"but {affected_people} affected people are recorded."
+            )
 
     now = datetime.now(timezone.utc)
     assigned_ids = []
@@ -1209,6 +1334,7 @@ def evaluate_grounded_resources(
     """
     constraints_considered = [
         "Required capability",
+        "Resource capacity",
         "Resource availability",
         "Assignment status",
         "Location",
@@ -1237,6 +1363,7 @@ def _build_grounded_response_data(
                 "department_name": res.department.name,
                 "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
                 "capabilities": res.capabilities,
+                "capacity": res.capacity,
                 "status": res.availability,
                 "distance_m": dist,
                 "latitude": float(res.latitude) if res.latitude is not None else None,
@@ -1259,6 +1386,7 @@ def _build_grounded_response_data(
                     "department_name": res.department.name,
                     "capability": ", ".join(res.capabilities) if res.capabilities else "Unknown",
                     "capabilities": res.capabilities,
+                    "capacity": res.capacity,
                     "status": res.availability.lower(),
                     "distance_m": dist,
                 }
@@ -1660,6 +1788,7 @@ def _request_groq_plan(incident: Incident, facts: dict,
                 "department": resource.department.name,
                 "availability": resource.availability,
                 "capabilities": resource.capabilities,
+                "capacity": resource.capacity,
                 "location": {
                     "latitude": float(resource.latitude),
                     "longitude": float(resource.longitude),
@@ -1791,6 +1920,9 @@ def generate_response_plan(
         rationale=rationale,
         evidence=evidence,
         gaps=gaps,
+        context_snapshot=_response_plan_context_snapshot(
+            db, incident, [uuid.UUID(candidate["id"]) for candidate in resource_candidates]
+        ),
         planner_provider=planner_provider,
         planner_model=groq_model,
         human_approval_required=True,
@@ -1815,7 +1947,9 @@ def generate_response_plan(
 
 def decide_response_plan(db: Session, plan_id: uuid.UUID, actor_id: uuid.UUID,
                          decision: str, reason: str | None = None) -> ResponsePlan:
-    plan = db.get(ResponsePlan, plan_id)
+    plan = db.scalar(
+        select(ResponsePlan).where(ResponsePlan.id == plan_id).with_for_update()
+    )
     if plan is None:
         raise NotFound("Response plan not found.")
     incident = get_incident(db, plan.incident_id)
@@ -1834,6 +1968,21 @@ def decide_response_plan(db: Session, plan_id: uuid.UUID, actor_id: uuid.UUID,
         raise Conflict(err_msg)
     if decision not in {"APPROVED", "REJECTED"}:
         raise ValueError("Decision must be APPROVED or REJECTED.")
+    if decision == "APPROVED":
+        if not plan.human_approval_required:
+            raise Conflict("This plan is not configured to require human approval.")
+        if plan.context_snapshot is None:
+            _mark_response_plan_stale(db, plan, actor_id, "context_snapshot_missing")
+            raise Conflict("This response plan has no validation snapshot and must be regenerated.")
+        candidate_ids = [
+            uuid.UUID(candidate["id"])
+            for candidate in plan.resource_candidates
+            if isinstance(candidate, dict) and candidate.get("id")
+        ]
+        current_snapshot = _response_plan_context_snapshot(db, incident, candidate_ids)
+        if current_snapshot != plan.context_snapshot:
+            _mark_response_plan_stale(db, plan, actor_id, "operational_context_changed")
+            raise Conflict("The incident or recommended resources changed. Regenerate the response plan.")
 
     plan.status = decision
     plan.decided_by = actor_id

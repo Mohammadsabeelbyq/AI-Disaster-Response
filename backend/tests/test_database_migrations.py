@@ -9,6 +9,7 @@ from app.database.session import (
     _migrate_legacy_resources,
     _upgrade_extraction_columns,
     _upgrade_incident_columns,
+    _upgrade_resource_capacity_column,
     _upgrade_response_plan_columns,
     _upgrade_resource_registry_columns,
 )
@@ -75,7 +76,9 @@ def test_upgrade_adds_planner_attribution_to_legacy_response_plans():
 
         _upgrade_response_plan_columns(test_engine)
         columns = {column["name"] for column in inspect(test_engine).get_columns("response_plans")}
-        assert {"planner_provider", "planner_model", "alternative_response"} <= columns
+        assert {
+            "planner_provider", "planner_model", "alternative_response", "context_snapshot",
+        } <= columns
         with test_engine.connect() as connection:
             row = connection.execute(text(
                 "SELECT planner_provider, planner_model FROM response_plans"
@@ -128,6 +131,7 @@ def test_legacy_resources_migrate_once_and_remain_ineligible_until_assigned():
             assert migrated.resource_type is None
             assert migrated.latitude is None and migrated.longitude is None
             assert migrated.capabilities == ["WATER_RESCUE"]
+            assert migrated.capacity is None
             assert migrated.availability == "AVAILABLE"
             assert department.code == "LEGACY_UNASSIGNED"
             assert department.is_active is False
@@ -171,11 +175,13 @@ def test_registry_migration_allows_unknown_legacy_type_and_location():
                 "updated_at": "2025-01-01 00:00:00",
             })
 
+        _upgrade_resource_capacity_column(test_engine)
         _upgrade_resource_registry_columns(test_engine)
         columns = {column["name"]: column for column in inspect(test_engine).get_columns("resources")}
         assert columns["resource_type"]["nullable"] is True
         assert columns["latitude"]["nullable"] is True
         assert columns["longitude"]["nullable"] is True
+        assert columns["capacity"]["nullable"] is True
         with test_engine.connect() as connection:
             row = connection.execute(text("SELECT code, name FROM resources")).one()
             assert row == ("RES-OLD-01", "Old resource")

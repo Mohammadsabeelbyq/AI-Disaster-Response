@@ -14,7 +14,7 @@ def _login(client, email, password, role):
     })
 
 
-def _create_recommended_plan(client, resource_count=1):
+def _create_recommended_plan(client, resource_count=1, capacity=10, affected_people=None):
     assert _login(
         client, "admin@example.test", "test-admin-password-123", "ADMIN"
     ).status_code == 200
@@ -33,6 +33,7 @@ def _create_recommended_plan(client, resource_count=1):
             "resource_type": "RESCUE_TEAM",
             "name": f"Rescue team {index + 1}",
             "capabilities": ["RESCUE"],
+            "capacity": capacity,
             "latitude": 10.027,
             "longitude": 76.308,
             "availability": "AVAILABLE",
@@ -55,6 +56,14 @@ def _create_recommended_plan(client, resource_count=1):
     assert _login(
         client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT"
     ).status_code == 200
+    if affected_people is not None:
+        facts = dict(report.json()["extraction"]["extracted_facts"])
+        facts["affected_persons"] = affected_people
+        corrected = client.patch(
+            f"/reports/{report.json()['id']}/extraction",
+            json={"facts": facts},
+        )
+        assert corrected.status_code == 200, corrected.text
     incident = client.post(f"/reports/{report.json()['id']}/confirm")
     assert incident.status_code == 201, incident.text
     plan = client.post(f"/incidents/{incident.json()['id']}/plans")
@@ -211,6 +220,150 @@ def test_assignment_rechecks_all_selected_resource_states_atomically(client):
         assert db.query(ResourceAssignment).count() == 0
 
 
+def test_approval_marks_plan_stale_when_recommended_resource_changes(client):
+    _, plan, resources = _create_recommended_plan(client)
+    assert _login(
+        client, "admin@example.test", "test-admin-password-123", "ADMIN"
+    ).status_code == 200
+    changed = client.patch(
+        f"/resources/{resources[0]['id']}",
+        json={"capacity": 2},
+    )
+    assert changed.status_code == 200, changed.text
+    assert _login(
+        client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT"
+    ).status_code == 200
+
+    approval = client.post(
+        f"/response-plans/{plan['id']}/approve",
+        json={"reason": "Review the plan."},
+    )
+    assert approval.status_code == 409
+    fetched = client.get(f"/response-plans/{plan['id']}")
+    assert fetched.status_code == 200
+    assert fetched.json()["status"] == "STALE"
+
+    with SessionLocal() as db:
+        assert db.query(ResourceAssignment).count() == 0
+        assert db.query(WorkflowAudit).filter_by(
+            event_type="RESPONSE_PLAN_STALE",
+            plan_id=uuid.UUID(plan["id"]),
+        ).count() == 1
+
+
+def test_assignment_rejects_resource_without_required_incident_capability(client):
+    incident, plan, resources = _create_recommended_plan(client)
+    assert client.post(
+        f"/response-plans/{plan['id']}/approve",
+        json={"reason": "Review current incident facts."},
+    ).status_code == 200
+
+    assert _login(
+        client, "admin@example.test", "test-admin-password-123", "ADMIN"
+    ).status_code == 200
+    ineligible = client.post("/resources", json={
+        "code": f"RES-{uuid.uuid4().hex[:12].upper()}",
+        "department_id": resources[0]["department_id"],
+        "resource_type": "RESCUE_TEAM",
+        "name": "Ineligible police unit",
+        "capabilities": ["POLICE"],
+        "capacity": 10,
+        "latitude": 10.027,
+        "longitude": 76.308,
+        "availability": "AVAILABLE",
+    })
+    assert ineligible.status_code == 201, ineligible.text
+    assert _login(
+        client, "coordinator@example.test", "test-coordinator-password-123", "MANAGEMENT"
+    ).status_code == 200
+
+    assignment = client.post(
+        f"/response-plans/{plan['id']}/assignments",
+        json={
+            "resource_ids": [ineligible.json()["id"]],
+            "reason": "Select an available unit.",
+        },
+    )
+    assert assignment.status_code == 409
+    with SessionLocal() as db:
+        assert db.query(ResourceAssignment).count() == 0
+        assert db.get(Incident, uuid.UUID(incident["id"])) is not None
+
+
+def test_assignment_marks_approved_plan_stale_when_incident_facts_change(client):
+    incident, plan, resources = _create_recommended_plan(client)
+    assert client.post(
+        f"/response-plans/{plan['id']}/approve",
+        json={"reason": "Review current incident facts."},
+    ).status_code == 200
+
+    report_id = incident["report_id"]
+    corrected = client.patch(
+        f"/reports/{report_id}/extraction",
+        json={"facts": {
+            "incident_category": "FLOOD",
+            "severity_cues": ["trapped"],
+            "urgency": "CRITICAL",
+            "affected_persons": 8,
+            "hazards": ["FLOODWATER", "PEOPLE_TRAPPED"],
+            "requested_assistance": ["MEDICAL"],
+            "location_mentions": ["Assignment test area"],
+        }},
+    )
+    assert corrected.status_code == 200, corrected.text
+
+    assignment = client.post(
+        f"/response-plans/{plan['id']}/assignments",
+        json={
+            "resource_ids": [resources[0]["id"]],
+            "reason": "Assign the previously recommended unit.",
+        },
+    )
+    assert assignment.status_code == 409
+    assert client.get(f"/response-plans/{plan['id']}").json()["status"] == "STALE"
+    with SessionLocal() as db:
+        assert db.query(ResourceAssignment).count() == 0
+        assert db.query(WorkflowAudit).filter_by(
+            event_type="RESPONSE_PLAN_STALE",
+            plan_id=uuid.UUID(plan["id"]),
+        ).count() == 1
+
+
+def test_assignment_requires_capacity_for_all_known_affected_people(client):
+    incident, plan, resources = _create_recommended_plan(
+        client, resource_count=2, capacity=3, affected_people=5)
+    assert client.post(
+        f"/response-plans/{plan['id']}/approve",
+        json={"reason": "Review current incident facts."},
+    ).status_code == 200
+
+    assignment = client.post(
+        f"/response-plans/{plan['id']}/assignments",
+        json={
+            "resource_ids": [resources[0]["id"]],
+            "reason": "Assign the available rescue team.",
+        },
+    )
+    assert assignment.status_code == 409
+    assert "support 3 people" in assignment.json()["message"]
+    with SessionLocal() as db:
+        assert db.query(ResourceAssignment).count() == 0
+        assert db.get(Incident, uuid.UUID(incident["id"])) is not None
+    covered = client.post(
+        f"/response-plans/{plan['id']}/assignments",
+        json={
+            "resource_ids": [resource["id"] for resource in resources],
+            "reason": "Assign enough capacity for the reported people.",
+        },
+    )
+    assert covered.status_code == 200, covered.text
+    with SessionLocal() as db:
+        assert db.query(ResourceAssignment).filter_by(
+            incident_id=uuid.UUID(incident["id"]),
+            released_at=None,
+        ).count() == 2
+
+
 def test_coordinator_can_assign_available_nonrecommended_resource(client):
     incident, plan, recommended_resources = _create_recommended_plan(client)
     assert _login(
@@ -221,7 +374,8 @@ def test_coordinator_can_assign_available_nonrecommended_resource(client):
         "department_id": recommended_resources[0]["department_id"],
         "resource_type": "VEHICLE",
         "name": "Coordinator-selected police unit",
-        "capabilities": ["POLICE"],
+        "capabilities": ["RESCUE"],
+        "capacity": 10,
         "latitude": 10.027,
         "longitude": 76.308,
         "availability": "AVAILABLE",
@@ -293,6 +447,7 @@ def test_bulk_make_available_releases_assignments_and_records_history(client):
             "resource_type": "RESCUE_TEAM",
             "name": f"Bulk reset {status.lower()}",
             "capabilities": ["RESCUE"],
+            "capacity": 10,
             "latitude": 10.027,
             "longitude": 76.308,
             "availability": status,

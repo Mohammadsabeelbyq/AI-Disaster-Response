@@ -3,7 +3,7 @@ import base64
 import json
 import uuid
 
-from sqlalchemy import MetaData, String, Table, create_engine, inspect, insert, select, text
+from sqlalchemy import Integer, MetaData, String, Table, create_engine, inspect, insert, select, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import get_settings
@@ -36,6 +36,7 @@ def init_db() -> None:
     _upgrade_extraction_columns(engine)
     _upgrade_response_plan_columns(engine)
     _upgrade_resource_columns(engine)
+    _upgrade_resource_capacity_column(engine)
     _upgrade_resource_registry_columns(engine)
     _migrate_legacy_resources(engine)
 
@@ -112,7 +113,7 @@ def _upgrade_response_plan_columns(bind) -> None:
     with bind.begin() as connection:
         for col_name in (
             "response_option", "alternative_response", "constraints_considered", "rationale", "evidence",
-            "planner_provider", "planner_model",
+            "context_snapshot", "planner_provider", "planner_model",
         ):
             if col_name not in existing:
                 column = ResponsePlan.__table__.c[col_name]
@@ -138,6 +139,25 @@ def _upgrade_resource_columns(bind) -> None:
     table_name = preparer.quote("registered_resources")
     column_name = preparer.quote("resource_type")
     column_type = String(50).compile(dialect=bind.dialect)
+    with bind.begin() as connection:
+        connection.execute(text(
+            f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
+        ))
+
+
+def _upgrade_resource_capacity_column(bind) -> None:
+    """Keep legacy resources unknown-capacity until an administrator records it."""
+    inspector = inspect(bind)
+    if "resources" not in inspector.get_table_names():
+        return
+    existing = {column["name"] for column in inspector.get_columns("resources")}
+    if "capacity" in existing:
+        return
+
+    preparer = bind.dialect.identifier_preparer
+    table_name = preparer.quote("resources")
+    column_name = preparer.quote("capacity")
+    column_type = Integer().compile(dialect=bind.dialect)
     with bind.begin() as connection:
         connection.execute(text(
             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_type}"
@@ -252,6 +272,7 @@ def _migrate_legacy_resources(bind) -> None:
                     if isinstance(legacy["capabilities"], str)
                     else legacy["capabilities"] or []
                 ),
+                capacity=None,
                 latitude=legacy["latitude"],
                 longitude=legacy["longitude"],
                 availability=availability,

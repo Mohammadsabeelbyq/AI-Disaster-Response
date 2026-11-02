@@ -66,6 +66,7 @@ class ResourceCreate(BaseModel):
     resource_type: Literal["RESCUE_TEAM", "VEHICLE", "SHELTER", "SUPPLY"]
     name: str = Field(min_length=1, max_length=150)
     capabilities: list[str] = Field(min_length=1, max_length=30)
+    capacity: int = Field(gt=0)
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
     availability: Literal[
@@ -98,6 +99,7 @@ class ResourceUpdate(BaseModel):
     resource_type: Literal["RESCUE_TEAM", "VEHICLE", "SHELTER", "SUPPLY"] | None = None
     name: str | None = Field(default=None, min_length=1, max_length=150)
     capabilities: list[str] | None = Field(default=None, min_length=1, max_length=30)
+    capacity: int | None = Field(default=None, gt=0)
     latitude: float | None = Field(default=None, ge=-90, le=90)
     longitude: float | None = Field(default=None, ge=-180, le=180)
 
@@ -228,6 +230,7 @@ class ResourceOut(BaseModel):
     resource_type: str | None
     name: str
     capabilities: list[str]
+    capacity: int | None
     latitude: float | None
     longitude: float | None
     availability: str
@@ -257,6 +260,7 @@ class NearbyResourceOut(BaseModel):
     latitude: float
     longitude: float
     capabilities: list[str]
+    capacity: int
     availability: str
     distance_m: int
 

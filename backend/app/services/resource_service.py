@@ -123,6 +123,8 @@ def find_resource_matches(
         .where(
             Department.is_active.is_(True),
             Resource.availability.in_(selected_statuses),
+            Resource.capacity.is_not(None),
+            Resource.capacity > 0,
             ~active_assignment,
         )
         .order_by(Resource.code)
@@ -131,7 +133,8 @@ def find_resource_matches(
     report_latitude = float(incident.report.map_latitude)
     report_longitude = float(incident.report.map_longitude)
     for resource in candidates:
-        if (resource.resource_type is None or resource.latitude is None
+        if (resource.resource_type is None or resource.capacity is None
+            or resource.capacity <= 0 or resource.latitude is None
             or resource.longitude is None):
             continue
         distance = _distance_metres(
@@ -185,6 +188,7 @@ def find_nearby_resources(db: Session, incident_id: uuid.UUID, radius_m: int | N
                 "latitude": float(resource.latitude),
                 "longitude": float(resource.longitude),
                 "capabilities": resource.capabilities,
+                "capacity": resource.capacity,
                 "availability": resource.availability,
                 "distance_m": distance,
             }
@@ -285,7 +289,7 @@ def get_resource(db: Session, resource_id: uuid.UUID) -> Resource:
 
 
 def create_resource(db: Session, actor_id: uuid.UUID, *, code: str, department_id: uuid.UUID,
-                    resource_type: str, name: str, capabilities: list[str],
+                    resource_type: str, name: str, capabilities: list[str], capacity: int,
                     latitude: float, longitude: float, availability: str) -> Resource:
     department = db.get(Department, department_id)
     if department is None or not department.is_active:
@@ -296,6 +300,7 @@ def create_resource(db: Session, actor_id: uuid.UUID, *, code: str, department_i
         resource_type=resource_type,
         name=name,
         capabilities=capabilities,
+        capacity=capacity,
         latitude=latitude,
         longitude=longitude,
         availability=availability,
@@ -323,6 +328,7 @@ def update_resource(db: Session, resource_id: uuid.UUID, *,
                     resource_type: str | None = None,
                     name: str | None = None,
                     capabilities: list[str] | None = None,
+                    capacity: int | None = None,
                     latitude: float | None = None,
                     longitude: float | None = None) -> Resource:
     resource = db.get(Resource, resource_id)
@@ -347,6 +353,8 @@ def update_resource(db: Session, resource_id: uuid.UUID, *,
         resource.name = name
     if capabilities is not None:
         resource.capabilities = capabilities
+    if capacity is not None:
+        resource.capacity = capacity
     if latitude is not None:
         resource.latitude = latitude
     if longitude is not None:

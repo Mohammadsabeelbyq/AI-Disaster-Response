@@ -24,6 +24,7 @@ const blankResource = {
   resource_type: '',
   name: '',
   capabilities: '',
+  capacity: '',
   latitude: '',
   longitude: '',
   availability: 'AVAILABLE',
@@ -106,6 +107,7 @@ export default function ResourceRegistryPage() {
       resource_type: resourceTypes.includes(resource.resource_type) ? resource.resource_type : '',
       name: resource.name,
       capabilities: resource.capabilities.join(', '),
+      capacity: resource.capacity == null ? '' : String(resource.capacity),
       latitude: resource.latitude == null ? '' : String(resource.latitude),
       longitude: resource.longitude == null ? '' : String(resource.longitude),
       availability: resource.availability,
@@ -120,6 +122,7 @@ export default function ResourceRegistryPage() {
     const payload = {
       ...resourceDraft,
       capabilities: resourceDraft.capabilities.split(',').map((item) => item.trim()).filter(Boolean),
+      capacity: Number(resourceDraft.capacity),
       latitude: Number(resourceDraft.latitude),
       longitude: Number(resourceDraft.longitude),
     };
@@ -261,6 +264,7 @@ export default function ResourceRegistryPage() {
                 <label className="field"><span>Owning department</span><select required value={resourceDraft.department_id} onChange={(event) => setResourceDraft({ ...resourceDraft, department_id: event.target.value })}><option value="">Choose a department</option>{departments.filter((department) => department.is_active).map((department) => <option key={department.id} value={department.id}>{department.code} · {department.name}</option>)}</select></label>
                 <label className="field"><span>Resource name</span><input required maxLength="150" value={resourceDraft.name} onChange={(event) => setResourceDraft({ ...resourceDraft, name: event.target.value })} placeholder="North rescue boat" /></label>
                 <label className="field"><span>Capabilities <small>COMMA-SEPARATED TAGS</small></span><input required value={resourceDraft.capabilities} onChange={(event) => setResourceDraft({ ...resourceDraft, capabilities: event.target.value })} placeholder="RESCUE, WATER" /></label>
+                <label className="field"><span>People capacity</span><input required type="number" min="1" step="1" value={resourceDraft.capacity} onChange={(event) => setResourceDraft({ ...resourceDraft, capacity: event.target.value })} placeholder="People this resource can support" /></label>
                 <div className="field-grid">
                   <label className="field"><span>Latitude</span><input required type="number" min="-90" max="90" step="any" value={resourceDraft.latitude} onChange={(event) => setResourceDraft({ ...resourceDraft, latitude: event.target.value })} /></label>
                   <label className="field"><span>Longitude</span><input required type="number" min="-180" max="180" step="any" value={resourceDraft.longitude} onChange={(event) => setResourceDraft({ ...resourceDraft, longitude: event.target.value })} /></label>
@@ -309,6 +313,7 @@ export default function ResourceRegistryPage() {
                     <article className="resource-row" key={resource.id}>
                       <div className="resource-row__identity">
                         <strong>{resource.name}</strong><span>{resource.code} · {statusLabel(resource.resource_type)} · {resource.department.name}</span>
+                        <span>Capacity: {resource.capacity ?? 'Unknown'} people</span>
                         <span>{resource.latitude ?? 'Unknown'}, {resource.longitude ?? 'Unknown'}</span>
                         <div className="resource-capabilities">{resource.capabilities.map((capability) => <span key={capability}>{statusLabel(capability)}</span>)}</div>
                       </div>

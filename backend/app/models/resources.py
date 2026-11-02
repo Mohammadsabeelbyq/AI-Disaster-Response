@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, JSON, Numeric, String, Uuid, text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, JSON, Numeric, String, Uuid, text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database.session import Base
@@ -42,6 +42,7 @@ class Resource(Base):
     resource_type: Mapped[str | None] = mapped_column(String(50))
     name: Mapped[str] = mapped_column(String(150), nullable=False)
     capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    capacity: Mapped[int | None] = mapped_column(Integer)
     latitude: Mapped[float | None] = mapped_column(Numeric(9, 6, asdecimal=False))
     longitude: Mapped[float | None] = mapped_column(Numeric(9, 6, asdecimal=False))
     availability: Mapped[str] = mapped_column(String(20), nullable=False, default="AVAILABLE")

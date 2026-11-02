@@ -147,6 +147,7 @@ export default function ReviewPage() {
   const unassignedResourceCount = availableAssignmentResources.filter((resource) => (
     resource.department?.is_active
     && resource.resource_type
+    && resource.capacity > 0
     && resource.latitude != null
     && resource.longitude != null
   )).length;
@@ -234,6 +235,7 @@ export default function ReviewPage() {
           resource.availability === 'AVAILABLE'
           && resource.department?.is_active
           && resource.resource_type
+          && resource.capacity > 0
           && resource.latitude != null
           && resource.longitude != null
         ))
@@ -1388,7 +1390,7 @@ export default function ReviewPage() {
                       <div className="plan-resource-candidates">
                         <strong>Verified available resource candidates</strong>
                         {plan.resource_candidates.length ? plan.resource_candidates.map((resource) => (
-                          <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · {resource.distance_m} m · matches {resource.matched_capabilities.join(', ')}</p>
+                          <p key={resource.id}><b>{resource.code}</b> · {resource.name} · {resource.department_name} · supports {resource.capacity} people · {resource.distance_m} m · matches {resource.matched_capabilities.join(', ')}</p>
                         )) : <p>No available registered resource matches the reported assistance needs.</p>}
                       </div>
                       {plan.alternative_response && (
@@ -1458,6 +1460,8 @@ export default function ReviewPage() {
                               );
                               const ineligibleReason = !resource.department?.is_active
                                 ? 'Department inactive'
+                                : !Number.isInteger(resource.capacity) || resource.capacity <= 0
+                                  ? 'Record a positive people capacity before assigning'
                                 : !resource.resource_type || resource.latitude == null || resource.longitude == null
                                   ? 'Complete resource type and location before assigning'
                                   : null;
@@ -1478,6 +1482,7 @@ export default function ReviewPage() {
                                   />
                                   <span>
                                     <b>{resource.code}</b> · {resource.name} · {resource.department.name}
+                                    <small>Supports up to {resource.capacity} people</small>
                                     <small>{resource.capabilities.join(', ')}</small>
                                     {ineligibleReason && <small>{ineligibleReason}</small>}
                                   </span>
@@ -1488,6 +1493,7 @@ export default function ReviewPage() {
                               <p className="assignment-guidance">No currently available resources can be assigned.</p>
                             )}
                           </div>
+                          <p className="assignment-guidance">The combined capacity of active assignments and selected resources must cover the known affected-person count.</p>
                           <input
                             aria-label="Resource assignment reason"
                             value={assignmentReason}

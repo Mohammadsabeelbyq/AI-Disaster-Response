@@ -62,6 +62,7 @@ def _register_resource(client, name, capabilities, latitude=10.027, longitude=76
         "department_id": department.json()["id"],
         "name": name,
         "capabilities": capabilities,
+        "capacity": 10,
         "availability": status,
         "resource_type": resource_type,
         "latitude": latitude,
@@ -298,6 +299,7 @@ def test_unlocated_resource_is_rejected_at_registration(client):
         "resource_type": "RESCUE_TEAM",
         "name": "Unlocated Unit",
         "capabilities": ["RESCUE"],
+        "capacity": 10,
         "latitude": None,
         "longitude": None,
     })
@@ -316,6 +318,7 @@ def test_missing_resource_type_is_rejected_at_registration(client):
         "department_id": department["id"],
         "name": "Untyped unit",
         "capabilities": ["RESCUE"],
+        "capacity": 10,
         "latitude": 10.027,
         "longitude": 76.308,
     })
@@ -541,6 +544,7 @@ def test_missing_resource_type_is_rejected(client):
         "department_id": department["id"],
         "name": "Generic Helper",
         "capabilities": ["RESCUE"],
+        "capacity": 10,
         "latitude": 10.027,
         "longitude": 76.308,
     })
@@ -566,7 +570,8 @@ def test_recommendations_preview_endpoint(client):
     assert len(data["response_option"]["resources"]) == 1
     assert data["response_option"]["resources"][0]["resource_id"] == res["id"]
     assert data["constraints_considered"] == [
-        "Required capability", "Resource availability", "Assignment status", "Location"
+        "Required capability", "Resource capacity", "Resource availability",
+        "Assignment status", "Location"
     ]
     assert "Preview Res" in data["rationale"]
     assert len(data["evidence"]) == 1

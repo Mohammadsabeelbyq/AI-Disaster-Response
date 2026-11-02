@@ -25,6 +25,7 @@ def _resource_payload(department_id, **overrides):
         "resource_type": "RESCUE_TEAM",
         "name": "North rescue team",
         "capabilities": ["RESCUE", "FLOOD_RESCUE"],
+        "capacity": 10,
         "latitude": 10.01,
         "longitude": 76.31,
         "availability": "AVAILABLE",
@@ -63,11 +64,17 @@ def test_admin_registers_resources_and_coordinator_audits_availability(client, v
     resource = resource_response.json()
     assert resource["code"] == "RES-TEAM-01"
     assert resource["capabilities"] == ["RESCUE", "FLOOD_RESCUE"]
+    assert resource["capacity"] == 10
     assert resource["availability"] == "AVAILABLE"
     assert resource["availability_events"][0]["previous_availability"] is None
 
     assert client.post(
         "/resources", json=_resource_payload(department["id"])).status_code == 409
+    assert client.post(
+        "/resources",
+        json=_resource_payload(
+            department["id"], code="RES-ZERO-CAPACITY", capacity=0),
+    ).status_code == 422
     assert client.get("/resources?availability=AVAILABLE").json()[0]["id"] == resource["id"]
     assert client.get(f"/resources/{resource['id']}").status_code == 200
 

@@ -96,6 +96,7 @@ def reset_and_seed_demo_resources(db, actor_id):
             resource_type=resource_type,
             name=name,
             capabilities=capabilities,
+            capacity=5,
             latitude=latitude,
             longitude=longitude,
             availability="AVAILABLE",
