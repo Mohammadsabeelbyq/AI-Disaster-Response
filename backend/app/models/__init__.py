@@ -7,3 +7,4 @@ from app.models.incident import (Incident, IncidentPriorityOverride, IncidentRep
                                  PriorityRuleConfig, ResponsePlan, WorkflowAudit)  # noqa: F401
 from app.models.resources import (Department, Resource, ResourceAssignment,
                                   ResourceAvailabilityEvent)  # noqa: F401
+from app.models.notification import Notification  # noqa: F401

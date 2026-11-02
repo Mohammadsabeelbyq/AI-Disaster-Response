@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
-from app.api import auth, report_relationships, reports, resources, workflow
+from app.api import auth, notifications, report_relationships, reports, resources, workflow
 from app.database import SessionLocal, init_db
 from app.services.auth_service import seed_demo_accounts
 from app.services.errors import AppError
@@ -40,6 +40,7 @@ app.include_router(workflow.incidents_router)
 app.include_router(workflow.plans_router)
 app.include_router(resources.router)
 app.include_router(workflow.priority_router)
+app.include_router(notifications.router)
 if (FRONTEND_DIST_DIR / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST_DIR / "assets"), name="frontend-assets")
 
@@ -79,7 +80,7 @@ def report_form():
 @app.get("/{frontend_path:path}", include_in_schema=False)
 def frontend_routes(frontend_path: str):
     """Serve the React SPA for browser routes without masking unknown API paths."""
-    api_prefixes = {"auth", "departments", "health", "incidents", "reports", "resources", "response-plans"}
+    api_prefixes = {"auth", "departments", "health", "incidents", "notifications", "reports", "resources", "response-plans"}
     if frontend_path.split("/", 1)[0] in api_prefixes or not FRONTEND_INDEX.is_file():
         raise HTTPException(status_code=404)
     return FileResponse(FRONTEND_INDEX)
