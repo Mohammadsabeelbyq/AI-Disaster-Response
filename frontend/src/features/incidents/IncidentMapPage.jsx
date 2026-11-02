@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, LoaderCircle, Map as MapIcon, MapPin, RefreshCw, Search } from 'lucide-react';
 import L from 'leaflet';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Circle, CircleMarker, GeoJSON, MapContainer, Marker, Popup, TileLayer, Tooltip, useMap } from 'react-leaflet';
-import { getIncidentImpactArea, listIncidents, listNearbyResources, listReports } from '../../api/reports.js';
+import { getIncidentImpactArea, getReport, listIncidents, listNearbyResources, listReports } from '../../api/reports.js';
 import { parseLocationInput } from '../reports/mapLocation.js';
-import { filterAndSortIncidents, getIncidentCoordinates, getMappableIncidents, getMarkerPresentation, mergeReportsWithIncidents, PRIORITY_LEVELS } from './incidentMap.js';
+import { filterAndSortIncidents, findIncidentRecord, getIncidentCoordinates, getMappableIncidents, getMarkerPresentation, mergeReportsWithIncidents, PRIORITY_LEVELS } from './incidentMap.js';
 
 const REFRESH_INTERVAL_MS = 30000;
 const RESOURCE_STATES = ['AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE'];
@@ -63,7 +63,18 @@ function priorityStyle(priority) {
   };
 }
 
+function reviewPathFor(record) {
+  if (record.id !== record.report_id) {
+    return `/review?incidentId=${encodeURIComponent(record.id)}`;
+  }
+  return `/review?reportId=${encodeURIComponent(record.report_id || record.id)}`;
+}
+
 export default function IncidentMapPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedIncidentId = searchParams.get('incidentId');
+  const requestedReportId = searchParams.get('reportId');
+  const contextId = requestedIncidentId || requestedReportId;
   const [mapRecords, setMapRecords] = useState([]);
   const [impactArea, setImpactArea] = useState(null);
   const [nearbyResources, setNearbyResources] = useState([]);
@@ -91,10 +102,16 @@ export default function IncidentMapPage() {
   });
   const locatedIncidents = getMappableIncidents(mapRecords);
   const visibleLocatedIncidents = getMappableIncidents(queueIncidents);
-  const initialMapCenter = visibleLocatedIncidents.length
-    ? getIncidentCoordinates(visibleLocatedIncidents[0]) : [0, 0];
-  const selectedIncident = queueIncidents.find((incident) => incident.id === selectedId)
-    || queueIncidents[0] || null;
+  const selectedIncident = contextId
+    ? findIncidentRecord(mapRecords, contextId)
+    : mapRecords.find((incident) => incident.id === selectedId) || queueIncidents[0] || null;
+  const mapVisibleIncidents = contextId
+    ? getMappableIncidents(selectedIncident ? [selectedIncident] : [])
+    : visibleLocatedIncidents;
+  const initialMapCenter = contextId
+    ? getIncidentCoordinates(selectedIncident) || [0, 0]
+    : visibleLocatedIncidents.length
+      ? getIncidentCoordinates(visibleLocatedIncidents[0]) : [0, 0];
   const selectedPresentation = selectedIncident ? getMarkerPresentation(selectedIncident) : null;
   const visibleStatuses = [...new Set(visibleLocatedIncidents.map((incident) => getMarkerPresentation(incident).statusClass))];
   const queueStatuses = [...new Set(mapRecords.map((incident) => incident.status).filter(Boolean))].sort();
@@ -112,12 +129,18 @@ export default function IncidentMapPage() {
 
     setCoordinateError('');
     setSelectedId(null);
+    setSearchParams({}, { replace: true });
     setSearchPosition([parsed.latitude, parsed.longitude]);
   }
 
   function selectIncident(incidentId) {
     setSearchPosition(null);
     setSelectedId(incidentId);
+    const record = findIncidentRecord(mapRecords, incidentId);
+    setSearchParams({
+      incidentId,
+      ...(record?.report_id ? { reportId: record.report_id } : {}),
+    }, { replace: true });
   }
 
   useEffect(() => {
@@ -129,11 +152,38 @@ export default function IncidentMapPage() {
       try {
         const [reports, incidents] = await Promise.all([listReports(), listIncidents()]);
         if (!active || requestId !== latestRequestId.current) return;
-        const latest = mergeReportsWithIncidents(reports, incidents);
+        let latest = mergeReportsWithIncidents(reports, incidents);
+        let contextualRecord = findIncidentRecord(latest, contextId);
+        if (!contextualRecord && requestedReportId) {
+          const report = await getReport(requestedReportId);
+          if (!active || requestId !== latestRequestId.current) return;
+          if (
+            !contextId
+            || report.id === contextId
+            || report.incident?.id === contextId
+          ) {
+            latest = mergeReportsWithIncidents(
+              [...reports.filter((item) => item.id !== report.id), report],
+              incidents,
+            );
+            contextualRecord = findIncidentRecord(latest, contextId);
+          }
+        }
         const located = getMappableIncidents(latest);
         setMapRecords(latest);
-        setSelectedId((current) => latest.some((incident) => incident.id === current)
-          ? current : located[0]?.id ?? latest[0]?.id ?? null);
+        if (contextId && !contextualRecord) {
+          setSelectedId(null);
+          setError('The requested incident or report is not present in the latest queue data.');
+          setUpdatedAt(new Date());
+          return;
+        }
+        setSelectedId((current) => (
+          contextualRecord?.id
+          || (latest.some((item) => item.id === current) ? current : null)
+          || located[0]?.id
+          || latest[0]?.id
+          || null
+        ));
         setUpdatedAt(new Date());
         setError('');
       } catch (requestError) {
@@ -154,7 +204,7 @@ export default function IncidentMapPage() {
       active = false;
       window.clearInterval(interval);
     };
-  }, [refreshToken]);
+  }, [refreshToken, contextId, requestedReportId]);
 
   useEffect(() => {
     let active = true;
@@ -191,7 +241,11 @@ export default function IncidentMapPage() {
           <p>Filter and prioritize incoming reports and confirmed incidents, then explore their locations and nearby resources.</p>
         </div>
         <div className="incident-map-heading__actions">
-          <Link className="button button--primary" to="/review">Coordinator review & planning</Link>
+          <Link className="button button--primary" to={selectedIncident
+            ? reviewPathFor(selectedIncident)
+            : '/review'}>
+            Coordinator review & planning
+          </Link>
           <button className="button button--quiet incident-map-refresh" type="button"
             onClick={() => setRefreshToken((current) => current + 1)} disabled={refreshing}
             aria-label="Refresh incidents" title="Refresh incidents">
@@ -247,7 +301,7 @@ export default function IncidentMapPage() {
             </div>
           )}
           <div className="incident-map-toolbar">
-            <span>{visibleLocatedIncidents.length} LOCATED RECORD{visibleLocatedIncidents.length === 1 ? '' : 'S'} ON MAP</span>
+            <span>{mapVisibleIncidents.length} LOCATED RECORD{mapVisibleIncidents.length === 1 ? '' : 'S'} ON MAP</span>
             <span role="status">{updatedAt ? `Updated ${updatedAt.toLocaleTimeString()}` : 'Waiting for saved data'}</span>
           </div>
           <section className="incident-queue" aria-label="Incident queue">
@@ -324,6 +378,12 @@ export default function IncidentMapPage() {
                           {formatIncidentTime(timestamp)}
                         </time>
                       </button>
+                      <Link
+                        className="incident-queue__details"
+                        to={reviewPathFor(incident)}
+                      >
+                        View details
+                      </Link>
                     </li>
                   );
                 })}
@@ -376,7 +436,7 @@ export default function IncidentMapPage() {
                     </Popup>
                   </CircleMarker>
                 ))}
-                {visibleLocatedIncidents.map((incident) => {
+                {mapVisibleIncidents.map((incident) => {
                   const position = getIncidentCoordinates(incident);
                   const selected = incident.id === selectedIncident?.id;
                   return (
@@ -390,7 +450,7 @@ export default function IncidentMapPage() {
                   );
                 })}
               </MapContainer>
-              {visibleLocatedIncidents.length === 0 && !searchPosition && (
+              {mapVisibleIncidents.length === 0 && !searchPosition && (
                 <span className="incident-map-no-results" role="status">
                   No matching records with valid map coordinates.
                 </span>
@@ -446,10 +506,20 @@ export default function IncidentMapPage() {
                     <div><dt>Coordinates</dt><dd>{selectedIncident.report.latitude}, {selectedIncident.report.longitude}</dd></div>
                   </dl>
                   <p>{selectedIncident.report.description}</p>
+                  {getIncidentCoordinates(selectedIncident) === null && (
+                    <small role="status">Coordinates are unavailable or invalid. Correct the report location to place it on the map.</small>
+                  )}
                   {selectedIncident.priority_is_overridden && <small>Priority adjusted by a coordinator.</small>}
-                  <Link className="button button--quiet" to={`/review?reportId=${encodeURIComponent(selectedIncident.report_id || selectedIncident.id)}`}>
-                    Review this report
-                  </Link>
+                  <div className="incident-map-detail__actions">
+                    <Link className="button button--quiet" to={reviewPathFor(selectedIncident)}>
+                      View details
+                    </Link>
+                    {['CONFIRMED', 'ACTIVE'].includes(selectedIncident.status) && (
+                      <Link className="button button--quiet" to={`/resources?incidentId=${encodeURIComponent(selectedIncident.id)}`}>
+                        View resources
+                      </Link>
+                    )}
+                  </div>
                 </section>
               )}
               {selectedIncident && (

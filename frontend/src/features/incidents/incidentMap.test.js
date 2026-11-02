@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   filterAndSortIncidents,
+  findIncidentRecord,
+  findReportForContext,
   getIncidentCoordinates,
   getMappableIncidents,
   getMarkerPresentation,
@@ -81,6 +83,50 @@ test('shows saved reports immediately and replaces confirmed reports without dup
   const confirmedRecords = mergeReportsWithIncidents([report], [confirmed]);
   assert.deepEqual(confirmedRecords, [confirmed]);
   assert.equal(mergeReportsWithIncidents([], [confirmed]).length, 1);
+});
+
+test('resolves incident or report context IDs to the correct current record', () => {
+  const records = [
+    { id: 'report-1', report_id: 'report-1', status: 'SUBMITTED' },
+    { id: 'incident-2', report_id: 'report-2', status: 'CONFIRMED' },
+  ];
+
+  assert.equal(findIncidentRecord(records, 'report-1'), records[0]);
+  assert.equal(findIncidentRecord(records, 'incident-2'), records[1]);
+  assert.equal(findIncidentRecord(records, 'report-2'), records[1]);
+  assert.equal(findIncidentRecord(records, 'unknown'), null);
+});
+
+test('resolves report review context from either report ID or incident ID', () => {
+  const reports = [
+    { id: 'report-1', incident: null },
+    { id: 'report-2', incident: { id: 'incident-2' } },
+  ];
+
+  assert.equal(findReportForContext(reports, { reportId: 'report-1' }), reports[0]);
+  assert.equal(findReportForContext(reports, { incidentId: 'incident-2' }), reports[1]);
+  assert.equal(findReportForContext(reports, { incidentId: 'unknown' }), null);
+});
+
+test('uses coordinator-corrected coordinates for submitted report map records', () => {
+  const report = {
+    id: 'report-corrected',
+    status: 'SUBMITTED',
+    disaster_type: 'FLOOD',
+    description: 'Water rising',
+    latitude: 10,
+    longitude: 76,
+    location_name: 'Submitted location',
+    location_correction: {
+      latitude: 11,
+      longitude: 77,
+      location_name: 'Corrected location',
+    },
+  };
+
+  const [record] = mergeReportsWithIncidents([report], []);
+  assert.deepEqual(getIncidentCoordinates(record), [11, 77]);
+  assert.equal(record.report.location_name, 'Corrected location');
 });
 
 test('filters the incident queue by status, type, and time period', () => {

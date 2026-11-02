@@ -28,6 +28,7 @@ import {
 } from '../../api/reports.js';
 import { listResources } from '../../api/resources.js';
 import { validateCoordinates } from './mapLocation.js';
+import { findReportForContext } from '../incidents/incidentMap.js';
 
 function locationDraftFrom(report) {
   return {
@@ -38,7 +39,7 @@ function locationDraftFrom(report) {
 }
 
 export default function ReviewPage() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [reports, setReports] = useState([]);
   const [incidents, setIncidents] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
@@ -103,6 +104,8 @@ export default function ReviewPage() {
     }
   }
   const selected = reports.find((report) => report.id === selectedId) || null;
+  const selectedIncidentId = selected?.incident?.id || incident?.id || null;
+  const selectedIncidentStatus = selected?.incident?.status || incident?.status || null;
   const selectedIncidentLink = selected?.incident_links?.[0] || null;
   const availableAssignmentResources = assignmentResources.filter(
     (resource) => resource.availability === 'AVAILABLE',
@@ -144,11 +147,57 @@ export default function ReviewPage() {
       setLinkTargetId(activeIncidents.find((item) => (
         ['CONFIRMED', 'ACTIVE'].includes(item.status)
       ))?.id || '');
+      const requestedReportId = searchParams.get('reportId');
+      const requestedIncidentId = searchParams.get('incidentId');
       if (items.length) {
-        const requestedReport = items.find((report) => report.id === searchParams.get('reportId'));
-        const initialReport = requestedReport || items[0];
-        setSelectedId(initialReport.id);
-        setLocationDraft(locationDraftFrom(initialReport));
+        const requestedReport = findReportForContext(items, {
+          reportId: requestedReportId,
+          incidentId: requestedIncidentId,
+        });
+        const hasRequestedContext = Boolean(requestedReportId || requestedIncidentId);
+        const initialReport = requestedReport || (hasRequestedContext ? null : items[0]);
+        if (initialReport) {
+          setSelectedId(initialReport.id);
+          setLocationDraft(locationDraftFrom(initialReport));
+        } else if (hasRequestedContext) {
+          const requestedReportPromise = requestedReportId
+            ? getReport(requestedReportId)
+            : getIncident(requestedIncidentId).then((requestedIncident) => (
+              getReport(requestedIncident.report_id)
+            ));
+          return requestedReportPromise.then((report) => {
+            if (requestedIncidentId && report.incident?.id !== requestedIncidentId) {
+              throw new Error('The requested report does not belong to the selected incident.');
+            }
+            setReports((current) => [
+              ...current.filter((item) => item.id !== report.id),
+              report,
+            ]);
+            setSelectedId(report.id);
+            setLocationDraft(locationDraftFrom(report));
+          }).catch((error) => {
+            setSelectedId(null);
+            setLocationDraft(null);
+            setMessage({
+              kind: 'error',
+              text: error.message || 'The requested report or incident is not available.',
+            });
+          });
+        } else {
+          setSelectedId(null);
+          setLocationDraft(null);
+          setMessage({
+            kind: 'error',
+            text: 'The requested report or incident is not present in the latest review queue.',
+          });
+        }
+      } else if (searchParams.get('reportId') || searchParams.get('incidentId')) {
+        setSelectedId(null);
+        setLocationDraft(null);
+        setMessage({
+          kind: 'error',
+          text: 'The requested report or incident is not present in the latest review queue.',
+        });
       }
     }).catch((error) => setMessage({ kind: 'error', text: error.message }))
       .finally(() => setLoading(false));
@@ -162,6 +211,9 @@ export default function ReviewPage() {
       setAssignmentResourceIds([]);
       return () => { active = false; };
     }
+    setIncident(null);
+    setPlan(null);
+    setAssignmentResourceIds([]);
     getIncident(selected.incident.id).then((result) => {
       if (!active) return;
       setIncident(result);
@@ -229,6 +281,10 @@ export default function ReviewPage() {
     setUnlinkReason('');
     setDeleteReason('');
     setMessage(null);
+    const nextParams = new URLSearchParams();
+    nextParams.set('reportId', report.id);
+    if (report.incident?.id) nextParams.set('incidentId', report.incident.id);
+    setSearchParams(nextParams);
   }
 
   function updateReport(updated) {
@@ -1035,6 +1091,19 @@ export default function ReviewPage() {
                 <div className="panel-heading"><div><span className="section-kicker">SOURCE EVIDENCE</span><h2>Original submission</h2></div><span className="review-status">{selected.status}</span></div>
                 <p className="source-description">{selected.description}</p>
                 <dl className="source-meta"><div><dt>Reported category</dt><dd>{selected.disaster_type.replaceAll('_', ' ')}</dd></div><div><dt>Location</dt><dd>{selected.location_name || 'Not provided'}</dd></div><div><dt>Coordinates</dt><dd>{selected.latitude}, {selected.longitude}</dd></div><div><dt>Reference</dt><dd>{selected.id}</dd></div></dl>
+                <nav className="incident-context-navigation" aria-label="Incident workflow navigation">
+                  <Link to={`/incident-map?incidentId=${encodeURIComponent(selectedIncidentId || selected.id)}&reportId=${encodeURIComponent(selected.id)}`}>
+                    View on map
+                  </Link>
+                  {selectedIncidentId && ['CONFIRMED', 'ACTIVE'].includes(selectedIncidentStatus) ? (
+                    <Link to={`/resources?incidentId=${encodeURIComponent(selectedIncidentId)}`}>
+                      View relevant resources
+                    </Link>
+                  ) : (
+                    <span aria-disabled="true">Relevant resources available after confirmation</span>
+                  )}
+                  <Link to="/incident-map">Back to incident queue</Link>
+                </nav>
                 {selected.status !== 'DISMISSED' && (
                   <form className="review-location-editor" onSubmit={saveLocationCorrection}>
                     <div className="review-location-editor__heading">

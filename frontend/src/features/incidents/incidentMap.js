@@ -44,6 +44,20 @@ export function getMappableIncidents(incidents) {
   return incidents.filter((incident) => getIncidentCoordinates(incident) !== null);
 }
 
+export function findIncidentRecord(incidents, contextId) {
+  if (!Array.isArray(incidents) || !contextId) return null;
+  return incidents.find((incident) => (
+    incident?.id === contextId || incident?.report_id === contextId
+  )) || null;
+}
+
+export function findReportForContext(reports, { incidentId, reportId } = {}) {
+  if (!Array.isArray(reports)) return null;
+  return reports.find((report) => report.id === reportId)
+    || reports.find((report) => report.incident?.id === incidentId)
+    || null;
+}
+
 export function mergeReportsWithIncidents(reports, incidents) {
   const savedReports = Array.isArray(reports) ? reports : [];
   const confirmedIncidents = Array.isArray(incidents) ? incidents : [];
@@ -68,9 +82,9 @@ export function mergeReportsWithIncidents(reports, incidents) {
           id: report.id,
           disaster_type: report.disaster_type,
           description: report.description,
-          latitude: report.latitude,
-          longitude: report.longitude,
-          location_name: report.location_name,
+          latitude: report.location_correction?.latitude ?? report.latitude,
+          longitude: report.location_correction?.longitude ?? report.longitude,
+          location_name: report.location_correction?.location_name ?? report.location_name,
           submitted_at: report.submitted_at,
         },
       };

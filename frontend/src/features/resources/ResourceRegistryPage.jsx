@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { AlertCircle, Check, LoaderCircle, Plus, Save } from 'lucide-react';
+import { AlertCircle, Check, LoaderCircle, MapPin, Plus, RefreshCw, Save } from 'lucide-react';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   createDepartment,
   createResource,
@@ -10,12 +11,16 @@ import {
   updateResource,
   updateResourceAvailability,
 } from '../../api/resources.js';
+import { getIncident, listNearbyResources } from '../../api/reports.js';
 import { useAuth } from '../auth/AuthProvider.jsx';
 
 const departmentTypes = ['FIRE', 'MEDICAL', 'POLICE', 'DISASTER_MANAGEMENT'];
 const resourceTypes = ['RESCUE_TEAM', 'VEHICLE', 'SHELTER', 'SUPPLY'];
 const availabilityTypes = ['AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE'];
 const registrationAvailabilityTypes = availabilityTypes.filter((value) => value !== 'ASSIGNED');
+const incidentResourceStatuses = [
+  'AVAILABLE', 'BUSY', 'DEPLOYED', 'ASSIGNED', 'UNAVAILABLE', 'INACTIVE', 'MAINTENANCE',
+];
 
 const blankDepartment = { code: '', name: '', department_type: 'FIRE' };
 const blankResource = {
@@ -35,6 +40,8 @@ function statusLabel(value) {
 
 export default function ResourceRegistryPage() {
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const incidentId = searchParams.get('incidentId');
   const isAdmin = user?.role === 'ADMIN';
   const [departments, setDepartments] = useState([]);
   const [resources, setResources] = useState([]);
@@ -46,6 +53,11 @@ export default function ResourceRegistryPage() {
   const [saving, setSaving] = useState(false);
   const [bulkAvailabilityReason, setBulkAvailabilityReason] = useState('');
   const [message, setMessage] = useState(null);
+  const [contextIncident, setContextIncident] = useState(null);
+  const [contextResources, setContextResources] = useState([]);
+  const [contextLoading, setContextLoading] = useState(false);
+  const [contextError, setContextError] = useState('');
+  const [contextRefreshToken, setContextRefreshToken] = useState(0);
 
   async function refreshRegistry() {
     const [nextDepartments, nextResources] = await Promise.all([
@@ -81,6 +93,37 @@ export default function ResourceRegistryPage() {
       .finally(() => active && setLoading(false));
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    if (!incidentId) {
+      setContextIncident(null);
+      setContextResources([]);
+      setContextLoading(false);
+      setContextError('');
+      return () => { active = false; };
+    }
+
+    setContextIncident(null);
+    setContextResources([]);
+    setContextLoading(true);
+    setContextError('');
+    Promise.all([
+      getIncident(incidentId),
+      listNearbyResources(incidentId, incidentResourceStatuses),
+    ]).then(([nextIncident, result]) => {
+      if (!active) return;
+      if (result.incident_id !== incidentId) {
+        throw new Error('The resource response did not match the selected incident.');
+      }
+      setContextIncident(nextIncident);
+      setContextResources(result.resources || []);
+    }).catch((error) => {
+      if (active) setContextError(error.message || 'Incident resources could not be loaded.');
+    }).finally(() => active && setContextLoading(false));
+
+    return () => { active = false; };
+  }, [incidentId, contextRefreshToken]);
 
   async function saveDepartment(event) {
     event.preventDefault();
@@ -226,6 +269,90 @@ export default function ResourceRegistryPage() {
         <div className={`notice notice--${message.kind}`} role={message.kind === 'error' ? 'alert' : 'status'}>
           {message.kind === 'error' ? <AlertCircle size={17} /> : <Check size={17} />}{message.text}
         </div>
+      )}
+
+      {incidentId && (
+        <section className="panel incident-resource-context" aria-labelledby="incident-resource-context-title">
+          <div className="panel-heading">
+            <div>
+              <span className="section-kicker">SELECTED INCIDENT</span>
+              <h2 id="incident-resource-context-title">Relevant registered resources</h2>
+            </div>
+            <button
+              className="button button--quiet"
+              type="button"
+              disabled={contextLoading}
+              onClick={() => setContextRefreshToken((current) => current + 1)}
+            >
+              {contextLoading
+                ? <LoaderCircle className="location-spinner" size={15} />
+                : <RefreshCw size={15} />}
+              Refresh
+            </button>
+          </div>
+          {contextLoading ? (
+            <div className="resource-state" role="status">
+              <LoaderCircle className="location-spinner" size={18} />Loading incident and nearby resources…
+            </div>
+          ) : contextError ? (
+            <div className="notice notice--error" role="alert">
+              <AlertCircle size={17} />{contextError}
+            </div>
+          ) : contextIncident ? (
+            <>
+              <div className="incident-resource-context__summary">
+                <div>
+                  <strong>{contextIncident.report.disaster_type.replaceAll('_', ' ')}</strong>
+                  <span>{contextIncident.id}</span>
+                </div>
+                <span>{statusLabel(contextIncident.status)} · {contextIncident.priority_band || 'UNRATED'}</span>
+                <p>{contextIncident.report.description}</p>
+                <small>
+                  {contextIncident.report.location_name || 'Unnamed location'} ·
+                  {' '}{contextIncident.report.latitude}, {contextIncident.report.longitude}
+                </small>
+              </div>
+              <div className="incident-resource-context__actions">
+                <Link className="button button--quiet" to={`/review?incidentId=${encodeURIComponent(contextIncident.id)}`}>
+                  View incident details
+                </Link>
+                <Link className="button button--quiet" to={`/incident-map?incidentId=${encodeURIComponent(contextIncident.id)}`}>
+                  <MapPin size={15} />View on map
+                </Link>
+              </div>
+              <div className="incident-resource-context__list">
+                <strong>
+                  {contextResources.length} matching resource{contextResources.length === 1 ? '' : 's'}
+                </strong>
+                {contextResources.length ? (
+                  <ul>
+                    {contextResources.map((resource) => (
+                      <li key={resource.id}>
+                        <div>
+                          <strong>{resource.code} · {resource.name}</strong>
+                          <span>{resource.resource_type || 'Type not recorded'} · {resource.department_name}</span>
+                          <span>Capabilities: {resource.capabilities.join(', ') || 'Not recorded'}</span>
+                          <small>
+                            <MapPin size={13} />{resource.latitude}, {resource.longitude} · {resource.distance_m} m from incident
+                          </small>
+                        </div>
+                        <span className={`resource-availability resource-availability--${resource.availability.toLowerCase()}`}>
+                          {statusLabel(resource.availability)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p>No registered resources match this incident’s location and capabilities.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <p className="incident-resource-context__empty">
+              The selected incident is not available in the latest backend data.
+            </p>
+          )}
+        </section>
       )}
 
       {loading ? (
