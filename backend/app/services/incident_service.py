@@ -153,6 +153,40 @@ def calculate_priority_for_incident(db: Session, incident: Incident) -> Incident
     incident.priority_algorithm_version = PRIORITY_ALGORITHM_VERSION
     incident.priority_factors = factors
     incident.priority_breakdown = breakdown
+    explained_factors = {}
+    if score is not None:
+        risk_factors = breakdown.get("risk_factors", {})
+        for name, value in factors.items():
+            if name == "evidence_confidence":
+                continue
+            risk_item = risk_factors[name]
+            explained_factors[name] = {
+                "value": value,
+                "weight": risk_item["normalized_weight"],
+                "contribution": risk_item["score_points_before_confidence"],
+            }
+        if "evidence_confidence" in factors:
+            explained_factors["evidence_confidence"] = {
+                "value": factors["evidence_confidence"],
+                "weight": config.weights["evidence_confidence"],
+                "contribution": score - sum(
+                    item["contribution"] for item in explained_factors.values()
+                ),
+            }
+        elif explained_factors:
+            last_factor = next(reversed(explained_factors))
+            explained_factors[last_factor]["contribution"] += score - sum(
+                item["contribution"] for item in explained_factors.values()
+            )
+        incident.priority_explanation = {
+            "factors": explained_factors,
+            "weighted_total": score,
+            "calculated_score": score,
+            "calculated_band": incident.priority_band,
+            "thresholds": dict(config.thresholds),
+        }
+    else:
+        incident.priority_explanation = None
     incident.priority_calculated_at = datetime.now(timezone.utc)
     if score is not None and incident.priority_original_score is None:
         incident.priority_original_score = score

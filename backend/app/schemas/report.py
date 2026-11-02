@@ -271,6 +271,20 @@ class IncidentReportSummaryOut(BaseModel):
     location_name: str | None = Field(validation_alias="map_location_name")
 
 
+class PriorityFactorExplanationOut(BaseModel):
+    value: float
+    weight: float
+    contribution: float
+
+
+class PriorityExplanationOut(BaseModel):
+    factors: dict[str, PriorityFactorExplanationOut]
+    weighted_total: float
+    calculated_score: float
+    calculated_band: str
+    thresholds: dict[str, float]
+
+
 class IncidentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -289,6 +303,7 @@ class IncidentOut(BaseModel):
     priority_factors: dict[str, float] | None = None
     priority_breakdown: dict | None = None
     priority_is_advisory: bool = True
+    priority_explanation: PriorityExplanationOut | None = None
     priority_is_overridden: bool = False
     priority_original_score: float | None = None
     priority_original_band: str | None = None

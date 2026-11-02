@@ -43,6 +43,7 @@ To serve the production bundle from FastAPI, run `npm run build` and restart the
 - The coordinator Incident map (`/incident-map`) displays saved reports and confirmed incidents with status and priority indicators, configured impact-area overlays, selectable details, and a direct link to review/plan the selected report. Unconfirmed reports are labeled “Pending review”; priority and nearby resources are available after confirmation.
 - Response plans use corrected/effective facts, show matching available registered-resource candidates, and require human approval. In the approved-plan assignment menu, all available registry resources are listed and AI-suggested resources are highlighted. Coordinators can select another available unit; the backend rechecks availability and operational registry data, and assignments/releases are audited without dispatching services.
 - Coordinators can unlink a report association or unmerge a consolidated incident with a required reason. Deleting a report also deletes its dependent incident workflow, releases active resources, returns other linked reports to the submitted queue, and removes attached media.
+- Confirmed incidents show a priority score breakdown with factor values, normalized weights, point contributions, confidence adjustment, the calculated classification, and the thresholds used by that rule version.
 - `/report-form` remains an alias for the web form.
 - Dashboard, department alerts, and actual dispatch are not implemented in this frontend slice.
 

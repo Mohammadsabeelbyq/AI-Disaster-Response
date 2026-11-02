@@ -37,6 +37,43 @@ function locationDraftFrom(report) {
   };
 }
 
+const fields = [
+  ['severity_cues', 'Severity cues'],
+  ['hazards', 'Hazards'],
+  ['requested_assistance', 'Requested assistance'],
+  ['location_mentions', 'Location mentions'],
+];
+
+const factLabels = {
+  incident_category: 'Incident category',
+  urgency: 'Urgency',
+  affected_persons: 'Affected persons',
+  severity_cues: 'Severity cues',
+  hazards: 'Hazards',
+  requested_assistance: 'Requested assistance',
+  location_mentions: 'Location mentions',
+};
+
+const priorityFactorLabels = {
+  life_safety_risk: 'Life-safety risk',
+  urgency: 'Urgency',
+  affected_population: 'Affected population',
+  hazard_level: 'Hazard level',
+  evidence_confidence: 'Evidence confidence',
+};
+const priorityBandOrder = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
+
+function formatFactValue(value) {
+  if (value == null) return 'Unknown';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'Unknown';
+  if (typeof value === 'number') return String(value);
+  return String(value);
+}
+
+function draftFrom(report) {
+  return { ...(report.extraction.corrected_facts || report.extraction.extracted_facts) };
+}
+
 export default function ReviewPage() {
   const [searchParams] = useSearchParams();
   const [reports, setReports] = useState([]);
@@ -1206,7 +1243,6 @@ export default function ReviewPage() {
                         {incident.priority_score != null ? `${Math.round(incident.priority_score)} / 100` : 'Not scored'}
                       </strong>
                     </div>
-
                     <details className="priority-review-details">
                       <summary>Scoring details and coordinator override</summary>
                     {incident.priority_breakdown?.risk_factors && Object.keys(incident.priority_breakdown.risk_factors).length > 0 && (
@@ -1237,6 +1273,42 @@ export default function ReviewPage() {
                       </div>
                     )}
 
+                    {incident.priority_explanation ? (
+                      <div className="priority-explanation">
+                        <h3>Calculated score breakdown</h3>
+                        <p>Available risk-factor weights are normalized before scoring; evidence confidence adjusts the total.</p>
+                        <dl className="priority-explanation__factors">
+                          {Object.entries(incident.priority_explanation.factors).map(([key, factor]) => (
+                            <div key={key}>
+                              <dt>{priorityFactorLabels[key] || key.replaceAll('_', ' ')}</dt>
+                              <dd>
+                                <span>Value {Number(factor.value).toFixed(2)}</span>
+                                <span>Weight {(Number(factor.weight) * 100).toFixed(2)}%</span>
+                                <strong>{Number(factor.contribution) >= 0 ? '+' : ''}{Number(factor.contribution).toFixed(1)} points</strong>
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                        <div className="priority-explanation__result">
+                          <span>Weighted total {Number(incident.priority_explanation.weighted_total).toFixed(1)}</span>
+                          <span>Calculated {incident.priority_explanation.calculated_band} · {Number(incident.priority_explanation.calculated_score).toFixed(1)}/100</span>
+                        </div>
+                        <p className="priority-explanation__thresholds">
+                          Band thresholds: {priorityBandOrder
+                            .map((band) => `${band} ≥ ${Number(incident.priority_explanation.thresholds[band]).toFixed(0)}`)
+                            .join(' · ')}
+                        </p>
+                        {incident.priority_is_overridden && (
+                          <p className="priority-explanation__override">
+                            The final priority above is overridden; this breakdown shows the original calculated classification.
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="priority-explanation__unavailable">
+                        A factor breakdown is not available for this previously calculated incident.
+                      </p>
+                    )}
                     {incident.priority_is_overridden && (
                       <p className="priority-override-notice">
                         Overridden from calculated {incident.priority_original_band} ({Math.round(incident.priority_original_score ?? 0)}/100). Reason: {incident.priority_override_reason || 'Not provided'}
